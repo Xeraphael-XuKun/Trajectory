@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# W0: whu_mars with cudnn.benchmark=False.
 set -euo pipefail
 
 cd /mnt/cache/wanghanzhi/XK/Trajectory

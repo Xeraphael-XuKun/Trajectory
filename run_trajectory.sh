@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Shared Linux entrypoint for Trajectory training and checkpoint evaluation.
 set -euo pipefail
 
 # Usage:

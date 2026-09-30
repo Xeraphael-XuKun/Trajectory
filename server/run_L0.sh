@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# L0: llmpar with cudnn.benchmark=False.
 set -euo pipefail
 
 cd /mnt/cache/wanghanzhi/XK/Trajectory
