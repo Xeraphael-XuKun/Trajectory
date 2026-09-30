@@ -5,6 +5,7 @@ from datasets import make_dataloader
 from model import make_model
 from processor import do_inference
 from utils.logger import setup_logger
+from utils.runtime import configure_cudnn, runtime_summary
 
 
 def setup_cuda_visible_devices(cfg):
@@ -35,6 +36,7 @@ if __name__ == "__main__":
     cfg.freeze()
 
     setup_cuda_visible_devices(cfg)
+    configure_cudnn(cfg.SOLVER.CUDNN_BENCHMARK)
 
     output_dir = cfg.OUTPUT_DIR
     if output_dir and not os.path.exists(output_dir):
@@ -42,6 +44,7 @@ if __name__ == "__main__":
 
     logger = setup_logger("transreid", output_dir, if_train=False)
     logger.info(args)
+    logger.info(runtime_summary())
 
     if args.config_file != "":
         logger.info("Loaded configuration file {}".format(args.config_file))

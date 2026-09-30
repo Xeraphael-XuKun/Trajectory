@@ -5,6 +5,7 @@ from solver import make_optimizer
 from solver.scheduler_factory import create_scheduler
 from loss import make_loss
 from processor import do_train
+from utils.runtime import configure_cudnn, runtime_summary
 import random
 import torch
 import numpy as np
@@ -33,14 +34,13 @@ def resolve_local_rank(args):
         return int(args.local_rank)
     return 0
 
-def set_seed(seed):
+def set_seed(seed, cudnn_benchmark):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
     random.seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = True
+    configure_cudnn(cudnn_benchmark)
 
 if __name__ == '__main__':
 
@@ -63,7 +63,7 @@ if __name__ == '__main__':
     setup_cuda_visible_devices(cfg)
     args.local_rank = resolve_local_rank(args)
 
-    set_seed(cfg.SOLVER.SEED)
+    set_seed(cfg.SOLVER.SEED, cfg.SOLVER.CUDNN_BENCHMARK)
 
     if cfg.MODEL.DIST_TRAIN:
         torch.cuda.set_device(args.local_rank)
@@ -75,6 +75,7 @@ if __name__ == '__main__':
     logger = setup_logger("transreid", output_dir, if_train=True)
     logger.info("Saving model in the path :{}".format(cfg.OUTPUT_DIR))
     logger.info(args)
+    logger.info(runtime_summary())
 
     if args.config_file != "":
         logger.info("Loaded configuration file {}".format(args.config_file))

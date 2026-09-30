@@ -486,6 +486,10 @@ _C.SOLVER.WARMUP_LR_FACTOR = 0.01
 _C.SOLVER.BIAS_LR_FACTOR = 1
 # Factor of learning bias
 _C.SOLVER.SEED = 1234
+# Historical Trajectory runs used deterministic=True together with
+# benchmark=True.  Keep that behavior as the default, while exposing the
+# benchmark switch so environment x cuDNN controls are recorded in config/logs.
+_C.SOLVER.CUDNN_BENCHMARK = True
 # Momentum
 _C.SOLVER.MOMENTUM = 0.9
 # Margin of triplet loss

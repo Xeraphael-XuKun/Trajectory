@@ -11,6 +11,7 @@ CLIP_WEIGHT=${CLIP_WEIGHT:-ViT-B-16.pt}
 DATA_ROOT=${DATA_ROOT:-/data}
 OUTPUT_DIR=${OUTPUT_DIR:-./logs/whu_trajectory_vtc}
 CONFIG=${CONFIG:-configs/whu_trajectory_vtc.yml}
+CUDNN_BENCHMARK=${CUDNN_BENCHMARK:-true}
 
 if [ ! -f "$CLIP_WEIGHT" ]; then
   echo "missing official CLIP checkpoint: $CLIP_WEIGHT" >&2
@@ -23,6 +24,7 @@ case "$ACTION" in
       MODEL.PRETRAIN_PATH "$CLIP_WEIGHT" \
       MODEL.TEXT_CLIP_PATH "$CLIP_WEIGHT" \
       DATASETS.ROOT_DIR "$DATA_ROOT" \
+      SOLVER.CUDNN_BENCHMARK "$CUDNN_BENCHMARK" \
       OUTPUT_DIR "$OUTPUT_DIR"
     ;;
   test)
@@ -35,7 +37,9 @@ case "$ACTION" in
       MODEL.PRETRAIN_PATH "$CLIP_WEIGHT" \
       MODEL.TEXT_CLIP_PATH "$CLIP_WEIGHT" \
       DATASETS.ROOT_DIR "$DATA_ROOT" \
-      TEST.WEIGHT "$CKPT"
+      SOLVER.CUDNN_BENCHMARK "$CUDNN_BENCHMARK" \
+      TEST.WEIGHT "$CKPT" \
+      OUTPUT_DIR "$OUTPUT_DIR"
     ;;
   *)
     echo "usage: bash run_trajectory.sh {train|test}" >&2
