@@ -1,0 +1,102 @@
+# VPR main experiment on WHU-MARS.
+#
+# Loss equation (no hidden ramp, active from epoch 1):
+#   L = L_CE + L_Triplet + 5.0 * L_ViewText + 5.0 * L_CSD
+#
+# CE and Triplet are unchanged from the prior HiHR/CLIP baseline.  Both new
+# outer weights are exactly the preceding VTC weight (5.0).  Their raw losses
+# sum feature-vector energies (O(1)); they do not average over 512 coordinates.
+
+MODEL:
+  PRETRAIN_CHOICE: 'imagenet'
+  PRETRAIN_PATH: 'ViT-B-16.pt'
+  TRANSFORMER_TYPE: 'vit_base_clip'
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  STRIDE_SIZE: [16, 16]
+
+  PE_TYPE: 'learnable'
+  PE_LAYERWISE: 'none'
+  # The inherited table is the fixed coordinate anchor.  VPR is the only
+  # trainable position correction.
+  PE_FREEZE_BASE: True
+
+  VPR: True
+  VPR_RANK: 16
+  VPR_CONDITIONAL: True
+  VPR_ZERO_MEAN: True
+  VPR_AERIAL_ONLY: True
+  VPR_VIEW_TEXT: True
+  VPR_CSD: True
+  VPR_TEXT_MODALITY: 'RGB'
+  VPR_TEXT_AERIAL: 'a photo of an aerial view person.'
+  VPR_TEXT_GROUND: 'a photo of a ground view person.'
+
+  # The legacy free residual and learnable-prompt VTC are not stacked.
+  MOD_DELTA: False
+  TEXT_ALIGN: False
+  TEXT_CLIP_PATH: 'ViT-B-16.pt'
+
+INPUT:
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+
+DATASETS:
+  NAMES: ('WHU-MARS')
+  ROOT_DIR: ('/data')
+  MODALITIES: ['RGB', 'IR', 'Thermal']
+  AERIAL_CAMS: [5, 6]
+
+DATALOADER:
+  SAMPLER: 'PKM'
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+  # CSD compares the same capture.  Crop/flip are shared; random erasing stays
+  # independent so no identical artificial patch is injected into the pair.
+  SYNC_FRAMES: True
+  TIE_AUGMENTATION: True
+  TIE_ERASING: False
+
+SOLVER:
+  OPTIMIZER_NAME: 'Adam'
+  MAX_EPOCHS: 60
+  BASE_LR: 0.00035
+  PRETRAINED_LR: 0.000005
+  PE_DELTA_LR_MULT: 1.0
+  BIAS_LR_FACTOR: 1
+  IMS_PER_BATCH: 64
+  WARMUP_ITERS: 100
+  WARMUP_METHOD: 'linear'
+  LARGE_FC_LR: False
+  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  CHECKPOINT_PERIOD: 60
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 10
+  LOSS_TYPE: 'base'
+
+  TEXT_LOSS_WEIGHT: 0.0
+  TWIN_LOSS_WEIGHT: 0.0
+  TNCE_WEIGHT: 0.0
+  VPR_VIEW_TEXT_WEIGHT: 5.0
+  VPR_CSD_WEIGHT: 5.0
+  VPR_AUX_RESIDUAL_ONLY: True
+
+TEST:
+  EVAL: True
+  IMS_PER_BATCH: 1024
+  RE_RANKING: False
+  WEIGHT: 'transformer_60.pth'
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+
+OUTPUT_DIR: './logs/vpr_whu'

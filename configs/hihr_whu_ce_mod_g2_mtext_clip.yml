@@ -1,0 +1,162 @@
+# 三合一：CE 光谱分组 + 位置残差 + 文本监督（视角轴，6 锚点）
+#
+#   bash run_hihr.sh whu_ce_mod_g2_mtext_clip
+#
+# Derived from hihr_whu_ce_mod_g2_clip.yml by adding every key that
+# hihr_whu_mtext_lam50_clip.yml adds to hihr_whu_recipe_clip.yml -- the text
+# keys AND the three positional-delta keys, because that arm carries both.
+# All lifted from that file, not retyped, so the prompt, the context length and
+# the spectrum words are the ones the 14.21 was measured with.
+#
+# WHY THE TEXT LOSS IS THE VIEWPOINT ONE AND NOT THE SPECTRUM ONE.  Both were
+# run on this tower, both on top of the same positional delta, both at lambda
+# 5.0, and the only difference between them is which axis the anchors name:
+#
+#     whu_pe_indep_clip      13.29    delta alone
+#     whu_mcam_clip          13.33    + text on the SPECTRUM axis   -> +0.04
+#     whu_mtext_lam50_clip   14.21    + text on the VIEWPOINT axis  -> +0.92
+#
+# That is the opposite of what was predicted from the deficit being thermal.
+# The spectrum-axis correction does nothing here; the viewpoint one is worth
+# nearly a point.  (One candidate reason, untested: Stage 0.1 measured `aerial`
+# against `ground` at cosine 0.8652 with the dog/car floor at 0.8632 -- CLIP's
+# text space separates that pair cleanly.  Whether the spectrum words are as
+# well grounded was never measured.)
+#
+# READ IT AGAINST whu_ce_mod_g2_pe_clip, NOT against the baseline.  The
+# increment this run is testing is the text loss on top of grouping+delta; the
+# two-way arm is what isolates it.
+#
+# WHY STACK THESE THREE AND NOT ANY OTHERS.  On the raw CLIP tower, measured
+# against whu_recipe_clip (11.99 / 31.10):
+#
+#     whu_ce_mod_g2_clip     13.33   +1.34   diagonal +10.87, off-diagonal +0.11
+#     whu_pe_indep_clip      13.29   +1.30   diagonal  +5.91, off-diagonal +6.13
+#     whu_mtext_lam50_clip   14.21   +2.22   diagonal  +9.83, off-diagonal +11.25
+#
+# Every other knob this project has turned -- epochs, triplet weight,
+# stochastic depth, label smoothing, attention dropout, NECK_FEAT, sixteen runs
+# across four axes -- moved nothing above +0.18, and moved it by SLIDING along
+# one trade-off: the diagonal of the 3x3 and its six off-diagonal cells went in
+# opposite directions and pooled mAP cancelled.  These three do not slide.
+#
+# AND THEY LOAD DIFFERENT CELLS.  CE grouping is diagonal-only; the positional
+# delta and the text loss push both.  That is what makes stacking worth a run
+# rather than wishful: the parts of the 3x3 they act on barely overlap.
+#
+# THE PRECEDENT FOR EXPECTING ADDITIVITY.  The one 2x2 this project has
+# completed -- CE grouping x initialisation -- came out with an interaction of
+# -0.01 against a +-0.2 sensitivity band, and the decomposition was exact to
+# two decimals: 10.23 + 1.76 + 1.34 = 13.33.  Two factors is not three, and one
+# clean 2x2 does not license the extrapolation, which is why the two-way arm
+# exists beside this one.
+#
+# IF FULLY ADDITIVE:  11.99 + 1.34 + 1.30 + 0.92 = 15.55.  Not a promise.
+#
+# WHAT HAS NEVER BEEN RUN TOGETHER BEFORE.  CE_SPLIT_MODALITY and TEXT_ALIGN
+# are independent code paths -- the split relabels the classifier target, the
+# text loss reads global_feat and a second delta-free forward -- and both use
+# the same modality-major batch layout, so they should not interact
+# mechanically.  Should is not the same as do; the startup log names both, and
+# the first LOG_PERIOD prints both diagnostics.
+#
+# DATASETS.AERIAL_CAMS arrives with the text keys and is EVALUATION-ONLY here:
+# ce_split_target only reads it when MODEL.CE_SPLIT_VIEW is True, which it is
+# not.  Its effect is that these runs also print the A/G view matrix, which the
+# arms they are built from did not all have.
+#
+# CONTROLS (training-log numbers, epoch 60, all on the raw tower):
+#     whu_recipe_clip        11.99 / 31.10     no grouping, no delta, no text
+#     whu_ce_mod_g2_clip     13.33 / 37.08     grouping only
+#     whu_pe_indep_clip      13.29 / 34.10     delta only
+#     whu_mtext_lam50_clip   14.21 / 36.11     delta + text
+#
+MODEL:
+  PRETRAIN_CHOICE: 'imagenet'
+  # [VARIABLE] the deliberate change: the raw OpenAI release rather than
+  # our CARGO checkpoint.  run_hihr.sh points this at $DATA/ViT-B-16.pt,
+  # the same file hihr_cargo_base.yml itself starts from.
+  PRETRAIN_PATH: 'ViT-B-16.pt'
+  # 4.2: "We adopt the CLIP-ViT-B/16 as the visual and text encoder."
+  TRANSFORMER_TYPE: 'vit_base_clip'
+  # [RECIPE] HiHR section 4.4: "cross-entropy loss and triplet loss".
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  STRIDE_SIZE: [16, 16]
+  CE_SPLIT_VIEW: False
+  CE_SPLIT_MODALITY: True
+  # [VARIABLE] the only deliberate change from hihr_whu_ce_mod.yml.
+  CE_MODALITY_GROUPS: [0, 0, 1]
+  # [VARIABLE] lifted verbatim from hihr_whu_mtext_lam50_clip.yml.
+  PE_FREEZE_BASE: False
+  PE_LAYERWISE: 'indep'
+  TEXT_ALIGN: True
+  TEXT_CLIP_PATH: 'ViT-B-16.pt'
+  TEXT_MODALITY_WORDS: ['rgb', 'infrared', 'thermal']
+  TEXT_N_CTX: 4
+  TEXT_TEMPLATE: 'a photo of a X view X person with X X X X .'
+
+INPUT:
+  # 4.2: "images are resized to 256 x 128 x 3"
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  # 4.2: "random horizontal flipping, random cropping and random erasing"
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
+  # CLIP's own normalisation -- the tower was fitted to these statistics.
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+
+DATASETS:
+  AERIAL_CAMS: [5, 6]
+  NAMES: ('WHU-MARS')
+  ROOT_DIR: ('/data')
+  MODALITIES: ['RGB', 'IR', 'Thermal']
+
+DATALOADER:
+  SAMPLER: 'PKM'
+  # 4.2: "with 4 images sampled per identity"
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+
+SOLVER:
+  PE_DELTA_LR_MULT: 1.0
+  TEXT_LOSS_WEIGHT: 5.0
+  # 4.2: "using Adam"
+  OPTIMIZER_NAME: 'Adam'
+  # 4.2: "We train for 60 epochs"
+  MAX_EPOCHS: 60
+  # 4.2: "3.5e-4 for randomly initialized modules and 5e-6 for pre-trained
+  #       components"  -- BASE_LR is the head, PRETRAINED_LR the CLIP tower.
+  BASE_LR: 0.00035
+  PRETRAINED_LR: 0.000005
+  BIAS_LR_FACTOR: 1
+  # 4.2: "a batch size of 64"
+  IMS_PER_BATCH: 64
+  # 4.2: "A warm-up strategy with 100 iterations is applied before the cosine
+  #       learning rate schedule."
+  WARMUP_ITERS: 100
+  WARMUP_METHOD: 'linear'
+  LARGE_FC_LR: False
+  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  CHECKPOINT_PERIOD: 60
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 10
+  # Plain CE + triplet, no ProCA/GPD: that is what "baseline" means in table 4.
+  LOSS_TYPE: "base"
+
+TEST:
+  EVAL: True
+  IMS_PER_BATCH: 1024
+  RE_RANKING: False
+  WEIGHT: 'transformer_60.pth'
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+
+OUTPUT_DIR: './logs/whu_ce_mod_g2_mtext_clip'

@@ -1,0 +1,183 @@
+# 孪生锚定的模态残差 —— v1：冻结骨干，只训 Δ_IR / Δ_TIR
+#
+#   bash run_hihr.sh whu_twin
+#
+# Derived from hihr_whu_recipe_hihr.yml (mAP 10.23 / R-1 26.68), which is both
+# the initialisation and the control.  Everything defining the recipe --
+# backbone, optimiser, batch, warmup, triplet, evaluation -- is inherited
+# untouched.
+#
+# The idea in one line: keep the actuator from direction one (layer-wise
+# residuals, zero-init, added to the stream before every block) and the grammar
+# from direction two ("X, once corrected, reads as Y" measured before/after),
+# and replace the ruler with the one thing this dataset has that no text tower
+# can supply -- the SAME-CAPTURE reference frame.
+#
+#                 target                                property
+#   RGB  64       none (no bank exists for it)           the coordinate frame
+#   IR   64       Δ_IR applied  ->  the RGB twin         corrected
+#   TIR  64       Δ_TIR applied ->  the RGB twin         corrected
+#
+# Why the twin rather than a word.  whu_mod_lam50 settled it: a sentence is ONE
+# vector shared by all 500 identities, so "approach it" and "keep people apart"
+# are in direct conflict.  Pushing hard drove every projected feature to cosine
+# 0.998 with the anchor and cost -1.22 mAP; stopping early bought +0.1.  The
+# twin is a different vector for every person and every frame and already
+# carries the identity, so satisfying it fully is the goal rather than a
+# collapse.  Frame-synchronised triplets exist for all 30,711 train captures
+# (stripping `_m{k}_`, the three modality directories hold identical filename
+# sets), so the target is already in the batch: rows i, i+64, i+128.
+#
+# Why the backbone is frozen in v1.  It buys a property, not just speed: with
+# SOLVER.MOD_DELTA_ONLY nothing but the banks can change, so evaluating with
+# TEST.MOD_DELTA False must reproduce whu_recipe_hihr bit for bit, and every
+# cross-modality movement is attributable to 2.38M parameters and nothing else.
+# whu_sync could not make that claim -- its cross-thermal gain (+0.10) came with
+# a diagonal loss (-0.49) and no way to separate the two.
+#
+# What to read, in order:
+#   1. `Twin: cos(IR->twin)` / `cos(Thermal->twin)`.  Rising means the banks are
+#      doing the job; flat from the first epoch means the additive residual
+#      program cannot express this correction on a frozen tower -- which is a
+#      clean negative result about the actuator itself.
+#   2. `768d d_cross(RGB,Thermal)`.  1.125 on the test set at the start;
+#      RGB<->IR already achieves 1.019, so that is the target.  d_diffpid
+#      (1.273) must NOT come down with it -- if it does, identity is being
+#      washed out and lambda is too high.
+#   3. The 3x3 matrix.  The four cross-thermal cells (4.62 / 4.39 / 5.03 / 4.34)
+#      are what this exists to move.  The diagonal (RGB->RGB 25.05) is frozen by
+#      construction; if it moves at all, something is wrong with the freeze.
+#   Only then the mAP.
+
+MODEL:
+  PRETRAIN_CHOICE: 'self'
+  # [VARIABLE] the clean baseline, not CARGO: pe_indep's cross-thermal cells
+  # were below recipe_hihr's at epochs 40/50/60, so the layer-wise view deltas
+  # are, if anything, slightly negative for the axis this run targets.
+  # Overridden to an absolute path by run_hihr.sh.
+  PRETRAIN_PATH: './out_hihr_whu_recipe_hihr/transformer_60.pth'
+  # 4.2: "We adopt the CLIP-ViT-B/16 as the visual and text encoder."
+  TRANSFORMER_TYPE: 'vit_base_clip'
+  # [RECIPE] HiHR section 4.4: "cross-entropy loss and triplet loss".  Kept as
+  # the brake: with the tower frozen their gradient reaches only the banks, so
+  # they are what stops the correction from washing identity out.
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  STRIDE_SIZE: [16, 16]
+  # [VARIABLE] one bank of layer-wise increments per non-reference spectrum.
+  MOD_DELTA: True
+  # Must be the first entry of DATASETS.MODALITIES -- bank row k is modality
+  # k+1, and make_model raises rather than silently shifting every row.
+  MOD_DELTA_REF: 'RGB'
+  # The tower is frozen, so stochastic depth and dropout cannot regularise it;
+  # all they would do is put noise on a regression target.
+  DROP_PATH: 0.0
+  DROP_OUT: 0.0
+  ATT_DROP_RATE: 0.0
+
+INPUT:
+  # 4.2: "images are resized to 256 x 128 x 3"
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  # 4.2: "random horizontal flipping, random cropping and random erasing"
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
+  # CLIP's own normalisation -- the tower was fitted to these statistics.
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+
+DATASETS:
+  NAMES: ('WHU-MARS')
+  ROOT_DIR: ('/data')
+  # Order is load-bearing twice over: it fixes the bank rows AND the
+  # modality-major layout of the batch.  RGB first because it is the reference.
+  MODALITIES: ['RGB', 'IR', 'Thermal']
+  # Training-neutral (only the evaluator's A/G view matrix reads it); set so
+  # this run prints the same readout as everything since whu_sync.
+  AERIAL_CAMS: [5, 6]
+
+DATALOADER:
+  SAMPLER: 'PKM'
+  # 4.2: "with 4 images sampled per identity"
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+  # [VARIABLE] required, not optional: the twin target IS the same capture.
+  # The processor hard-fails if the twin loss is on and this is off.
+  SYNC_FRAMES: True
+  # [VARIABLE] and just as required.  The shipped augmentation is drawn per
+  # IMAGE, so with SYNC_FRAMES alone the three spectra of one capture get
+  # independent flips, crops and erasings -- at p=0.5 that mirrors half the
+  # twin pairs relative to each other.  (Measured: applying the train transform
+  # twice to one image gave a different tensor 400 times out of 400.)  A
+  # per-modality constant cannot undo a mirror, so without this the regression
+  # target carries noise the model structurally cannot fit.
+  TIE_AUGMENTATION: True
+
+SOLVER:
+  # 4.2: "using Adam"
+  OPTIMIZER_NAME: 'Adam'
+  # 60, matching every comparison point: recipe_hihr's 10.23 and its whole 3x3
+  # are epoch-60 readings, and whu_sync showed the final anneal is worth +0.36
+  # mAP and +0.26 on the cross-thermal cells -- a 30-epoch curve would not be
+  # the same shape.  EVAL_PERIOD 5 below is what makes the length cheap: if
+  # d_cross has not moved by epoch 15 the run can be killed on the spot.
+  MAX_EPOCHS: 60
+  # 4.2: "3.5e-4 for randomly initialized modules and 5e-6 for pre-trained
+  #       components".  The banks are new modules and take BASE_LR; with
+  #       MOD_DELTA_ONLY nothing else is trainable anyway.
+  BASE_LR: 0.00035
+  PRETRAINED_LR: 0.000005
+  BIAS_LR_FACTOR: 1
+  # 4.2: "a batch size of 64"
+  IMS_PER_BATCH: 64
+  # 4.2: "A warm-up strategy with 100 iterations is applied before the cosine
+  #       learning rate schedule."
+  WARMUP_ITERS: 100
+  WARMUP_METHOD: 'linear'
+  LARGE_FC_LR: False
+  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  CHECKPOINT_PERIOD: 60
+  LOG_PERIOD: 50
+  # Every fifth epoch, not every tenth: the trajectory of the cross-thermal
+  # cells IS the result here, and an early flat reading is a licence to stop.
+  EVAL_PERIOD: 5
+  # Plain CE + triplet, no ProCA/GPD: that is what "baseline" means in table 4.
+  LOSS_TYPE: "base"
+  # [VARIABLE] the freeze, made mechanical in make_optimizer.
+  MOD_DELTA_ONLY: True
+  # [VARIABLE] the single knob.  Magnitude: with L2-normalised features at
+  # d_same ~ 0.148 (measured), the cross-thermal twin term starts near
+  # (0.148*1.125)^2/2 ~ 0.014, against CE+triplet at ~0.2-0.6 -- so 25 puts it
+  # at roughly parity with the brake rather than at 2% of it.  Treat that 0.014
+  # as an upper bound rather than an estimate: it was measured on same-identity
+  # pairs from DIFFERENT frames and cameras, so it carries pose and time as well
+  # as spectrum, while a twin pair carries spectrum alone and should start
+  # closer.  This is the one number in the config with no measurement behind it.
+  # Calibrate on the
+  # first epoch's log; if cos(->twin) is flat, this is the first thing to raise.
+  TWIN_LOSS_WEIGHT: 25.0
+
+TEST:
+  EVAL: True
+  IMS_PER_BATCH: 1024
+  RE_RANKING: False
+  WEIGHT: 'transformer_60.pth'
+  # 'before' also makes the BNNeck's drift a non-issue: with the tower frozen
+  # its weights cannot move, but its running statistics are buffers and still
+  # update while the banks change what the batch looks like.  Those statistics
+  # are only read in eval mode by the post-BNNeck feature, and retrieval takes
+  # the pre-BNNeck one -- so the drift never reaches a reported number, and the
+  # theorem below holds.  Flip this to 'after' and that stops being true.
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+  # True = the corrected reading.  Override to False on the command line for the
+  # theorem check: with the tower frozen it must reproduce the baseline exactly.
+  MOD_DELTA: True
+
+OUTPUT_DIR: './logs/whu_twin'

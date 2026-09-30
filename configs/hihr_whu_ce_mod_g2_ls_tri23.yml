@@ -1,0 +1,134 @@
+# whu_ce_mod_g2 + 标签平滑 + 三元组权重 2.3 —— 把两个 in-band 的结果一次定案
+#
+#   bash run_hihr.sh whu_ce_mod_g2_ls_tri23
+#
+# Derived from hihr_whu_ce_mod_g2.yml.  Two keys differ, and that is the point:
+# this run exists to test whether two effects that are individually too small
+# to claim are real.
+#
+# WHAT IS BEING DECIDED.  Both parents landed inside the +-0.2 this project
+# moves for reasons it cannot attribute:
+#
+#     whu_ce_mod_g2          11.58 / 32.71     the base
+#     whu_ce_mod_g2_ls       11.72 / 32.80     +0.14
+#     whu_ce_mod_g2_tri23    11.76 / 32.24     +0.18
+#
+# If both are real and roughly additive the sum is +0.32, which clears the
+# band; if either is noise it will not.  So:
+#
+#     >= 11.85    both real -- this becomes the best configuration, +1.67 on
+#                 the unsplit baseline's 10.23
+#     11.6-11.7   at least one was noise; neither is adopted and both axes
+#                 stay closed
+#
+# WHY THESE TWO AND NOT ANY OTHER PAIR.  Sixteen tuning runs across four axes
+# produced nothing above +0.18, and every one of them was a SLIDE along the
+# same trade-off: the diagonal of the 3x3 and its six off-diagonal cells moved
+# in opposite directions and pooled mAP cancelled.  whu_ce_mod_g2_ls is the
+# only arm in the whole campaign where BOTH went up --
+#
+#     diagonal      64.05 -> 64.38    +0.5%
+#     off-diagonal  49.53 -> 50.67    +2.3%
+#     cross-thermal  3.67 ->  3.90    +6.3%
+#
+# -- all nine cells rose, none fell, and d_diffpid fell from 1.665 to 1.593.
+# That is the pre-registered signature of regularisation working (the training
+# fit loosened AND retrieval improved), and it is not the shape noise takes:
+# the band's own demonstration, whu_ce_mod_g2_tri26, was a single point dipping
+# below both its neighbours on an otherwise monotone axis.
+#
+# AND THE MECHANISM FITS THIS BACKBONE SPECIFICALLY.  Label smoothing stops the
+# classifier demanding probability 1.0 on the correct class, which relieves the
+# pressure to drive each class maximally apart.  Under CE_MODALITY_GROUPS a
+# class IS an identity-and-spectrum-group, so that pressure is exactly what
+# costs whu_ce_mod_g2 its cross-modal retrieval -- and the measured gain is
+# twelve times larger, in relative terms, on the thermal cross cells than on
+# the diagonal.  Softening the target softens the modality separation.
+#
+# NOTHING HERE NEEDS DEFENDING TO A REVIEWER.  IF_LABELSMOOTH 'on' is
+# config/defaults.py's own default; HiHR's recipe is what turned it off.
+#
+# WATCH d_diffpid EITHER WAY.  1.665 at the base, 1.593 with label smoothing,
+# 1.715 at triplet 2.3.  The two push it in opposite directions, so a collapse
+# towards the dp30 end (1.353, over-regularised, -1.07 mAP) would mean the pair
+# does not compose and the reading is "incompatible", not "noise".
+#
+MODEL:
+  PRETRAIN_CHOICE: 'self'
+  # Overridden on the command line by run_hihr.sh; this is only the default.
+  PRETRAIN_PATH: './out_hihr_cargo_base/transformer_60.pth'
+  # 4.2: "We adopt the CLIP-ViT-B/16 as the visual and text encoder."
+  TRANSFORMER_TYPE: 'vit_base_clip'
+  # [RECIPE] HiHR section 4.4: "cross-entropy loss and triplet loss".
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'on'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  STRIDE_SIZE: [16, 16]
+  CE_SPLIT_VIEW: False
+  CE_SPLIT_MODALITY: True
+  # [VARIABLE] the only deliberate change from hihr_whu_ce_mod.yml.
+  CE_MODALITY_GROUPS: [0, 0, 1]
+  # [VARIABLE] one of the two deliberate changes; the other is
+  # MODEL.IF_LABELSMOOTH above, flipped to the repo default.
+  TRIPLET_LOSS_WEIGHT: 2.3
+
+INPUT:
+  # 4.2: "images are resized to 256 x 128 x 3"
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  # 4.2: "random horizontal flipping, random cropping and random erasing"
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
+  # CLIP's own normalisation -- the tower was fitted to these statistics.
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+
+DATASETS:
+  NAMES: ('WHU-MARS')
+  ROOT_DIR: ('/data')
+  MODALITIES: ['RGB', 'IR', 'Thermal']
+
+DATALOADER:
+  SAMPLER: 'PKM'
+  # 4.2: "with 4 images sampled per identity"
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+
+SOLVER:
+  # 4.2: "using Adam"
+  OPTIMIZER_NAME: 'Adam'
+  # 4.2: "We train for 60 epochs"
+  MAX_EPOCHS: 60
+  # 4.2: "3.5e-4 for randomly initialized modules and 5e-6 for pre-trained
+  #       components"  -- BASE_LR is the head, PRETRAINED_LR the CLIP tower.
+  BASE_LR: 0.00035
+  PRETRAINED_LR: 0.000005
+  BIAS_LR_FACTOR: 1
+  # 4.2: "a batch size of 64"
+  IMS_PER_BATCH: 64
+  # 4.2: "A warm-up strategy with 100 iterations is applied before the cosine
+  #       learning rate schedule."
+  WARMUP_ITERS: 100
+  WARMUP_METHOD: 'linear'
+  LARGE_FC_LR: False
+  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  CHECKPOINT_PERIOD: 60
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 10
+  # Plain CE + triplet, no ProCA/GPD: that is what "baseline" means in table 4.
+  LOSS_TYPE: "base"
+
+TEST:
+  EVAL: True
+  IMS_PER_BATCH: 1024
+  RE_RANKING: False
+  WEIGHT: 'transformer_60.pth'
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+
+OUTPUT_DIR: './logs/whu_ce_mod_g2_ls_tri23'

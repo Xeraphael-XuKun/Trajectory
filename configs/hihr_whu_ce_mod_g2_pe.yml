@@ -1,0 +1,134 @@
+# g2 + 逐层位置残差，文本损失关闭 —— 控制臂
+#
+#   bash run_hihr.sh whu_ce_mod_g2_pe
+#
+# SOLVER.TEXT_LOSS_WEIGHT is 0, so the text tower is built, the prompts exist
+# and the second forward pass runs, but nothing in the loss reads any of it.
+# What is left is exactly the positional delta, on the g2 backbone.
+#
+# This arm is what makes the other two readable.  Without it, a gain in
+# whu_ce_mod_g2_mcam could be the text loss or could be the delta, and the
+# delta is not innocent: on the old backbone it was slightly negative for
+# cross-thermal in all three epochs it was measured at.
+#
+# Cost: the second forward pass runs regardless, so this is as slow as the
+# arms it controls for -- which is the point.  A cheaper control that skipped
+# the pass would differ in more than the loss weight.
+#
+# WHY THIS IS WORTH RE-RUNNING AFTER whu_mcam SCORED -0.15.  That run was
+# closed with a mechanism, not with a shrug: diag/modality_zeroshot.py measured
+# the three spectrum centroids at cosine 0.9999 against 0.80-0.92 for the
+# original CLIP.  A text anchor is a DIRECTION, and the direction did not
+# exist.  whu_ce_mod_g2 is the thing that put it back -- centroid distance as a
+# multiple of d_same went RGB<->IR 0.041 -> 0.190 and RGB<->Th 0.069 -> 0.131.
+# The cause of death has been removed, so the experiment is live again.
+#
+# THE HONEST CEILING.  Section [4] of the diagnostics subtracts the modality
+# mean outright and gains +0.50 pooled.  A text anchor corrects a direction, so
+# +0.50 is the scale to expect from the systematic part; the rest of the
+# cross-modal gap is per-image scatter, which a direction cannot reach.  It is
+# not a hard bound -- the loss trains the backbone and the delta, which can
+# move the scatter too -- but it is the best estimate available, and +0.50
+# would still be the second largest effect this project has produced.
+#
+# PE_LAYERWISE IS NOT OPTIONAL HERE, and it is not a second idea being smuggled
+# in.  make_model.py builds feat_before with delta_gate=0 and feat_after
+# normally; with PE_LAYERWISE 'none' those two are the SAME tensor, and the
+# before cell ("read as infrared") and the after cell ("read as color") become
+# contradictory demands on one vector.  The loss is a constraint on the delta.
+# That is why whu_ce_mod_g2_pe exists: the delta alone was slightly NEGATIVE
+# for cross-thermal on the old backbone (pe_indep 4.04/4.28/4.56 against
+# recipe_hihr 4.08/4.34/4.60 at epochs 40/50/60), so its effect on the g2
+# backbone has to be measured separately or nothing here is attributable.
+#
+# CONTROLS (training-log numbers, epoch 60):
+#     whu_recipe_hihr    10.23 / 26.68
+#     whu_ce_mod_g2      11.58 / 32.71     the base
+#     whu_mcam           10.08 / 26.53     the same text loss on the old backbone
+#
+MODEL:
+  PRETRAIN_CHOICE: 'self'
+  # Overridden on the command line by run_hihr.sh; this is only the default.
+  PRETRAIN_PATH: './out_hihr_cargo_base/transformer_60.pth'
+  # 4.2: "We adopt the CLIP-ViT-B/16 as the visual and text encoder."
+  TRANSFORMER_TYPE: 'vit_base_clip'
+  # [RECIPE] HiHR section 4.4: "cross-entropy loss and triplet loss".
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  STRIDE_SIZE: [16, 16]
+  CE_SPLIT_VIEW: False
+  CE_SPLIT_MODALITY: True
+  # [VARIABLE] the only deliberate change from hihr_whu_ce_mod.yml.
+  CE_MODALITY_GROUPS: [0, 0, 1]
+  # [VARIABLE] the deliberate change from hihr_whu_ce_mod_g2.yml.
+  PE_LAYERWISE: 'indep'
+  PE_FREEZE_BASE: False
+  TEXT_ALIGN: True
+  TEXT_TARGET: 'modality'
+  TEXT_TEMPLATE: 'a photo of a person taken by a X camera with X X X X .'
+  TEXT_N_CTX: 4
+  TEXT_MODALITY: 'RGB'
+  TEXT_MODALITY_WORDS: ['color', 'infrared', 'thermal']
+
+INPUT:
+  # 4.2: "images are resized to 256 x 128 x 3"
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  # 4.2: "random horizontal flipping, random cropping and random erasing"
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
+  # CLIP's own normalisation -- the tower was fitted to these statistics.
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+
+DATASETS:
+  NAMES: ('WHU-MARS')
+  ROOT_DIR: ('/data')
+  MODALITIES: ['RGB', 'IR', 'Thermal']
+
+DATALOADER:
+  SAMPLER: 'PKM'
+  # 4.2: "with 4 images sampled per identity"
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+
+SOLVER:
+  # 4.2: "using Adam"
+  OPTIMIZER_NAME: 'Adam'
+  # 4.2: "We train for 60 epochs"
+  MAX_EPOCHS: 60
+  # 4.2: "3.5e-4 for randomly initialized modules and 5e-6 for pre-trained
+  #       components"  -- BASE_LR is the head, PRETRAINED_LR the CLIP tower.
+  BASE_LR: 0.00035
+  PRETRAINED_LR: 0.000005
+  BIAS_LR_FACTOR: 1
+  # 4.2: "a batch size of 64"
+  IMS_PER_BATCH: 64
+  # 4.2: "A warm-up strategy with 100 iterations is applied before the cosine
+  #       learning rate schedule."
+  WARMUP_ITERS: 100
+  WARMUP_METHOD: 'linear'
+  LARGE_FC_LR: False
+  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  CHECKPOINT_PERIOD: 60
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 10
+  # Plain CE + triplet, no ProCA/GPD: that is what "baseline" means in table 4.
+  LOSS_TYPE: "base"
+  TEXT_LOSS_WEIGHT: 0.0
+
+TEST:
+  EVAL: True
+  IMS_PER_BATCH: 1024
+  RE_RANKING: False
+  WEIGHT: 'transformer_60.pth'
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+
+OUTPUT_DIR: './logs/whu_ce_mod_g2_pe'

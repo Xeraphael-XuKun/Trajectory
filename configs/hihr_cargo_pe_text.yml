@@ -1,0 +1,132 @@
+# CARGO 上的验证：位置残差 + 视角文本，看方法换个数据集还成不成立
+#
+#   bash run_hihr.sh cargo_pe_text
+#
+# Derived from hihr_cargo_base.yml -- our reproduction of HiHR's baseline row,
+# 62.67 / 68.27 against the paper's 63.61 / 68.23 -- by adding exactly what
+# hihr_whu_text_lam50_clip.yml adds to hihr_whu_recipe_clip.yml, minus the two
+# things CARGO cannot carry.
+#
+# THIS IS NOT AN ABLATION.  Every other run in this project answers "which part
+# of our method does the work"; this one answers "does the method do anything
+# outside the one dataset it was built on", which is what gets asked first.
+#
+# WHAT TRANSFERS AND WHAT DOES NOT.  CARGO is single-modality (RGB only) with
+# 5 aerial and 8 ground cameras, so:
+#
+#     positional delta      applies -- it corrects the VIEWPOINT, which CARGO has
+#     viewpoint text loss   applies -- aerial/ground is exactly its axis
+#     CE spectrum grouping  does NOT -- there are no spectra to group
+#     spectrum text loss    does NOT -- same reason
+#
+# That the two transferable parts are precisely the two that make up the main
+# method is a convenience, not a design: the grouping was always the branch
+# that traded cross-modal for within-modal, and cross-modal does not exist here.
+#
+# THE CAMERA IDS ARE NOT WHU'S, AND GETTING THEM WRONG FAILS SILENTLY.
+# datasets/cargo.py parses Cam1..Cam13 one-based and `_camid` returns
+# `camid - 1` under PROTOCOL 'ALL', so the five drones land on ZERO-BASED
+# 0..4.  With the wrong list `_text_subset` marks every image ground, the
+# aerial->ground term never fires, and the run completes looking normal with a
+# text loss that trained nothing.  (WHU's [5, 6] would select two GROUND
+# cameras here.)
+#
+# CONTROL: hihr_cargo_base.yml -- 62.67 / 68.27, same tower, same recipe, same
+# 60 epochs, differing only in the keys added below.
+#
+# NOTE ON THE METRIC: CARGO scores with 'market', not the 'sysu' rule WHU-MARS
+# uses.  Inherited from cargo_base, unchanged, and it is why these numbers are
+# in the sixties rather than the teens -- they are not comparable with any
+# WHU-MARS figure in this project.
+#
+MODEL:
+  PRETRAIN_CHOICE: 'imagenet'      # "load a pretrained file", not ImageNet-specific
+  PRETRAIN_PATH: 'ViT-B-16.pt'     # sha256 5806e77c... official OpenAI release
+  # 4.2: "We adopt the CLIP-ViT-B/16 as the visual and text encoder."
+  TRANSFORMER_TYPE: 'vit_base_clip'
+  # 4.4: "cross-entropy loss and triplet loss"
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  STRIDE_SIZE: [16, 16]
+  # [VARIABLE] lifted from hihr_whu_text_lam50_clip.yml.
+  PE_LAYERWISE: 'indep'
+  PE_FREEZE_BASE: False
+  TEXT_ALIGN: True
+  TEXT_CLIP_PATH: 'ViT-B-16.pt'
+  TEXT_TEMPLATE: 'a photo of a X view person with X X X X .'
+  TEXT_N_CTX: 4
+  TEXT_MODALITY: 'RGB'
+
+INPUT:
+  # 4.2: "images are resized to 256 x 128 x 3"
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  # 4.2: "random horizontal flipping, random cropping and random erasing"
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
+  # CLIP's own normalisation -- the tower was fitted to these statistics.
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+
+DATASETS:
+  NAMES: ('CARGO')
+  ROOT_DIR: ('/data')
+  # CARGO is single-modality; this is a placeholder key, not a folder name.
+  MODALITIES: ['RGB']
+  # Table 4 reports the baseline under ALL.  AA / GG / AG are the other three.
+  PROTOCOL: 'ALL'
+  # [VARIABLE] CARGO cameras are ONE-based on disk and _camid returns
+  # camid-1 under PROTOCOL 'ALL', so drones Cam1..Cam5 are 0..4 here.
+  AERIAL_CAMS: [0, 1, 2, 3, 4]
+
+DATALOADER:
+  SAMPLER: 'PKM'
+  # 4.2: "with 4 images sampled per identity"
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+
+SOLVER:
+  PE_DELTA_LR_MULT: 1.0
+  TEXT_LOSS_WEIGHT: 5.0
+  # 4.2: "using Adam"
+  OPTIMIZER_NAME: 'Adam'
+  # 4.2: "We train for 60 epochs"
+  MAX_EPOCHS: 60
+  # 4.2: "3.5e-4 for randomly initialized modules and 5e-6 for pre-trained
+  #       components"  -- BASE_LR is the head, PRETRAINED_LR the CLIP tower.
+  BASE_LR: 0.00035
+  PRETRAINED_LR: 0.000005
+  BIAS_LR_FACTOR: 1
+  # 4.2: "a batch size of 64"
+  IMS_PER_BATCH: 64
+  # 4.2: "A warm-up strategy with 100 iterations is applied before the cosine
+  #       learning rate schedule."
+  WARMUP_ITERS: 100
+  WARMUP_METHOD: 'linear'
+  LARGE_FC_LR: False
+  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  CHECKPOINT_PERIOD: 60
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 10
+  # Plain CE + triplet, no ProCA/GPD: that is what "baseline" means in table 4.
+  LOSS_TYPE: "base"
+
+TEST:
+  EVAL: True
+  IMS_PER_BATCH: 1024
+  RE_RANKING: False
+  WEIGHT: 'transformer_60.pth'
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+  # fast-reid scores CARGO with the Market-1501 junk rule.  The repo default,
+  # 'sysu', drops the query's whole camera and reads several points higher --
+  # it would not match any number in the paper.
+  METRIC: 'market'
+
+OUTPUT_DIR: './logs/cargo_pe_text'

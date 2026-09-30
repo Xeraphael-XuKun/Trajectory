@@ -1,0 +1,125 @@
+# whu_ce_mod_g2 的三元组权重扫描：4.0
+#
+#   bash run_hihr.sh whu_ce_mod_g2_tri4
+#
+# Derived from hihr_whu_ce_mod_g2.yml; MODEL.TRIPLET_LOSS_WEIGHT is the only
+# key that differs, absent there because 1.0 is the default.
+#
+# WHY THERE IS A SWEEP AT ALL.  whu_ce_mod_g2_tri2 did exactly what its config
+# predicted, and the pre-registered failure check cleared:
+#
+#                         g2      tri2
+#     cross-thermal      3.67     4.51     +23%, back to the baseline's 4.59
+#     d_cross(RGB,Th)    1.275    1.195    the distance fell
+#     d_diffpid          1.665    1.702    and identity separated FURTHER
+#     pooled            11.58    11.74     +0.16
+#
+# The failure mode written into hihr_whu_ce_mod_g2_tri2.yml was that a heavier
+# triplet buys cross-modal alignment by flattening identity.  It did not
+# happen: thermal's share of the identity budget went from 41.4% to 27.7%
+# while the budget itself grew.  Both moved the right way at once.
+#
+# So the mechanism is real and only the magnitude is in doubt: +0.16 pooled is
+# inside the +-0.2 the lambda sweep moved for no attributable reason.  Two more
+# points on the same axis settle it.
+#
+# WHAT EACH OUTCOME MEANS.  If pooled keeps climbing to 12.0 and beyond, this
+# is a dial worth reporting rather than a wobble.  If 3.0 gains and 4.0 falls
+# back, the turning point is between them.  If 3.0 is already flat, 2.0 was
+# near the top and 11.74 is the answer.
+#
+# THE COST IS VISIBLE AND EXPECTED.  The triplet pulls a person's spectra
+# together, so weighting it moves mass from the diagonal of the 3x3 to the six
+# off-diagonal cells: 64.05 -> 62.56 and 49.54 -> 53.11 at weight 2.0, with
+# Rank-1 32.71 -> 32.15.  Pooled mAP still rises because six cells gain and
+# three lose.  Somewhere above here the diagonal collapse must win, and finding
+# that point is the purpose of this run.
+#
+# STILL WATCH d_diffpid.  It cleared at 2.0; it is not guaranteed to clear at
+# 4.0, and the whole result is void if identity washes out.  Reference: 1.665
+# at weight 1.0, 1.702 at weight 2.0, both at epoch 60.
+#
+# CONTROLS (training-log numbers, epoch 60):
+#     whu_recipe_hihr    10.23 / 26.68
+#     whu_ce_mod_g2      11.58 / 32.71
+#     whu_ce_mod_g2_tri2 11.74 / 32.15
+#
+# COST: about 2 hours.
+MODEL:
+  PRETRAIN_CHOICE: 'self'
+  # Overridden on the command line by run_hihr.sh; this is only the default.
+  PRETRAIN_PATH: './out_hihr_cargo_base/transformer_60.pth'
+  # 4.2: "We adopt the CLIP-ViT-B/16 as the visual and text encoder."
+  TRANSFORMER_TYPE: 'vit_base_clip'
+  # [RECIPE] HiHR section 4.4: "cross-entropy loss and triplet loss".
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  STRIDE_SIZE: [16, 16]
+  CE_SPLIT_VIEW: False
+  CE_SPLIT_MODALITY: True
+  # [VARIABLE] the only deliberate change from hihr_whu_ce_mod.yml.
+  CE_MODALITY_GROUPS: [0, 0, 1]
+  # [VARIABLE] the only deliberate change from hihr_whu_ce_mod_g2.yml.
+  TRIPLET_LOSS_WEIGHT: 4.0
+
+INPUT:
+  # 4.2: "images are resized to 256 x 128 x 3"
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  # 4.2: "random horizontal flipping, random cropping and random erasing"
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
+  # CLIP's own normalisation -- the tower was fitted to these statistics.
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+
+DATASETS:
+  NAMES: ('WHU-MARS')
+  ROOT_DIR: ('/data')
+  MODALITIES: ['RGB', 'IR', 'Thermal']
+
+DATALOADER:
+  SAMPLER: 'PKM'
+  # 4.2: "with 4 images sampled per identity"
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+
+SOLVER:
+  # 4.2: "using Adam"
+  OPTIMIZER_NAME: 'Adam'
+  # 4.2: "We train for 60 epochs"
+  MAX_EPOCHS: 60
+  # 4.2: "3.5e-4 for randomly initialized modules and 5e-6 for pre-trained
+  #       components"  -- BASE_LR is the head, PRETRAINED_LR the CLIP tower.
+  BASE_LR: 0.00035
+  PRETRAINED_LR: 0.000005
+  BIAS_LR_FACTOR: 1
+  # 4.2: "a batch size of 64"
+  IMS_PER_BATCH: 64
+  # 4.2: "A warm-up strategy with 100 iterations is applied before the cosine
+  #       learning rate schedule."
+  WARMUP_ITERS: 100
+  WARMUP_METHOD: 'linear'
+  LARGE_FC_LR: False
+  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  CHECKPOINT_PERIOD: 60
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 10
+  # Plain CE + triplet, no ProCA/GPD: that is what "baseline" means in table 4.
+  LOSS_TYPE: "base"
+
+TEST:
+  EVAL: True
+  IMS_PER_BATCH: 1024
+  RE_RANKING: False
+  WEIGHT: 'transformer_60.pth'
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+
+OUTPUT_DIR: './logs/whu_ce_mod_g2_tri4'

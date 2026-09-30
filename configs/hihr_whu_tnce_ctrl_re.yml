@@ -1,0 +1,207 @@
+# 2x2 的第四格：擦除解绑，孪生损失关掉
+#
+#   bash run_hihr.sh whu_tnce_ctrl_re
+#
+# This exists to make the ablation exact rather than nearly exact.  With all
+# four runs in place the table reads:
+#
+#                       RE_PROB 0.0            RE_PROB 0.5, untied
+#     lambda 0          whu_tnce_ctrl          THIS RUN
+#     lambda 0.25       whu_tnce_lam25 8.24    whu_tnce_lam25_re
+#
+# and every edge of it is a single key:
+#
+#     down a column   the twin loss, at a fixed augmentation
+#     across a row    the augmentation, at a fixed loss
+#
+# whu_sync (10.16) was standing in for this cell and is not the same thing: it
+# has SYNC_FRAMES without TIE_AUGMENTATION at all, so its crop and flip are
+# untied too, and it therefore differs from the other three in two places
+# rather than one.  Reading a 2x2 whose corner is only approximately right is
+# how an interaction ends up attributed to the wrong factor.
+#
+# THE FIX FOR THE ONE CHANGE THAT SHOULD NEVER HAVE BEEN MADE.
+#
+# The three whu_tnce runs all set INPUT.RE_PROB to 0, and all three landed
+# ~2.1 mAP below the baseline while lambda varying fourfold moved them by only
+# 0.23.  That pattern says the deficit is mostly NOT the loss, and random
+# erasing -- a regulariser the whole recipe was tuned with -- is the obvious
+# suspect.  It was switched off for a real reason and the wrong way round:
+#
+#   TIE_AUGMENTATION replays one seed over the whole pipeline, so a twin pair
+#   gets the same erased rectangle filled with the same constant.  Both images
+#   then carry a pixel-for-pixel identical patch, which shrinks by hand the
+#   very gap the twin loss is measuring (twin cosine 0.9932 in training against
+#   0.9880 on clean test features).
+#
+# Turning erasing off removes that contamination, but it also removes the
+# regulariser, and confounds the whole comparison.  DATALOADER.TIE_ERASING
+# False removes the contamination alone: the crop and the flip stay shared, so
+# a twin pair still differs only in spectrum, while each spectrum draws its own
+# erased rectangle.  The augmentation DISTRIBUTION is then exactly the one every
+# control used -- only the correlation between the three spectra changes.
+#
+# Together with the runs already on record this makes a 2x2:
+#
+#                       RE_PROB 0.0            RE_PROB 0.5, untied
+#     lambda 0          whu_tnce_ctrl          (whu_sync 10.16, see note)
+#     lambda 0.25       whu_tnce_lam25 8.24    THIS RUN
+#
+# Note on that fourth cell: whu_sync is the nearest thing on record but not an
+# exact match -- it has SYNC_FRAMES without TIE_AUGMENTATION at all, so its
+# crop and flip are untied too.  If this run needs a precise control, it is one
+# more config with TNCE_WEIGHT 0.
+#
+# Baselines to beat: whu_recipe_hihr 10.23 / 26.68, and 8.24 for the same
+# lambda with erasing removed.  If this lands near 10.2, the loss is neutral
+# and the earlier deficit was the augmentation all along.
+#
+# Derived from hihr_whu_recipe_hihr.yml (mAP 10.23 / R-1 26.68), which is both
+# the initialisation and the control.
+#
+# WHY THIS SHAPE.  The measurements of 2026-08-07..10 close off every other
+# one.  A thermal image sits 0.1549 from its RGB twin while two different
+# people sit at 0.1906, but only 0.0103 of that displacement is shared by all
+# thermal images -- 6.6%.  CE+triplet already removed that shared part (the
+# three spectrum centroids are at cosine 0.9999, against 0.80-0.92 for original
+# CLIP), so a text anchor, a shared delta or a per-modality constant are all
+# adjusting a quantity that is already zero.  That is why text_lam50 (+0.22),
+# mtext (+0.24), whu_sync (+0.10) and whu_twin (0.00) land where they do: not
+# five badly tuned methods but five versions of one.
+#
+# The remaining 93% is per-image scatter, so both halves have to be per-image:
+#
+#   target      the same-capture reference feature (SYNC_FRAMES gives it free)
+#   actuator    the whole backbone -- a per-modality constant cannot express a
+#               correction that differs per image, which is exactly why
+#               whu_twin's loss did not move in five epochs
+#
+# whu_twin had the first and not the second.  This run has both.
+#
+# WHAT IT COSTS.  The theorem whu_twin bought -- evaluation with the correction
+# off reproduces the baseline bit for bit -- is gone.  The tower moves, so
+# cross-modality gains are no longer attributable to a named 2.4M parameters.
+# Expressiveness in exchange for attribution, chosen deliberately.
+#
+# READ rank1 AND NOT THE LOSS.  diag/twin_infonce_probe.py measured, on this
+# very checkpoint, that plain centring lowers this loss by 56.8% while moving
+# twin rank-1 by 0.1 points (70.1% -> 70.2%), and section [4] measured that
+# centring is worth +0.50 mAP.  So the loss will fall steeply in the first
+# epochs for nothing, and reading that as progress is the mistake this comment
+# exists to prevent.  The log prints rank1 first for the same reason.
+#
+# STARTING POINTS, all from the probe on feats_whu_recipe_hihr:
+#   twin rank-1        70.1%   (30% of twins are not the nearest of 61)
+#   loss at tau 0.003  1.810   against a ceiling of log 61 = 4.111
+#   what a per-spectrum constant can still buy   0.8%   (and it costs 0.9pt of
+#                                                        rank-1, i.e. noise)
+
+MODEL:
+  PRETRAIN_CHOICE: 'self'
+  # Overridden on the command line by run_hihr.sh; this is only the default.
+  PRETRAIN_PATH: './out_hihr_cargo_base/transformer_60.pth'
+  # 4.2: "We adopt the CLIP-ViT-B/16 as the visual and text encoder."
+  TRANSFORMER_TYPE: 'vit_base_clip'
+  # [RECIPE] HiHR section 4.4: "cross-entropy loss and triplet loss".
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  STRIDE_SIZE: [16, 16]
+
+INPUT:
+  # 4.2: "images are resized to 256 x 128 x 3"
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  # 4.2: "random horizontal flipping, random cropping and random erasing"
+  PROB: 0.5
+  # [VARIABLE] 0.0, not the recipe's 0.5.  Random erasing under
+  # TIE_AUGMENTATION shares its mask between the two images of a twin pair,
+  # which inserts a pixel-for-pixel identical patch into both and shrinks the
+  # very gap this run exists to close: measured, the twin cosine reads 0.9932
+  # in training against 0.9880 on clean test features.  It does put this run
+  # one variable further from the baseline, but in the safe direction --
+  # removing a regulariser normally costs mAP, so a win here is understated
+  # rather than inflated.  Add a RE_PROB 0.0 control only if it wins.
+  # [VARIABLE vs whu_tnce_lam25] back to the recipe's 0.5.  The contamination
+  # that motivated 0.0 is handled by DATALOADER.TIE_ERASING below instead.
+  RE_PROB: 0.5
+  PADDING: 10
+  # CLIP's own normalisation -- the tower was fitted to these statistics.
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+
+DATASETS:
+  NAMES: ('WHU-MARS')
+  ROOT_DIR: ('/data')
+  MODALITIES: ['RGB', 'IR', 'Thermal']
+
+DATALOADER:
+  SAMPLER: 'PKM'
+  # [VARIABLE] required, not optional: the twin target IS the same capture.
+  # The processor hard-fails if TNCE_WEIGHT is on and this is off.
+  SYNC_FRAMES: True
+  # [VARIABLE] and just as required.  The shipped augmentation is drawn per
+  # IMAGE, so with SYNC_FRAMES alone the three spectra of one capture get
+  # independent flips and crops -- at PROB 0.5 that mirrors half the twin pairs
+  # relative to each other, and a mirrored pair is not a spectrum difference.
+  TIE_AUGMENTATION: True
+  # [VARIABLE] share the crop and the flip, not the erased rectangle.  Requires
+  # a trailing RandomErasing in the transform; ImageDataset raises if it cannot
+  # find one, so a renamed op fails loudly instead of leaving the flag inert.
+  TIE_ERASING: False
+  # 4.2: "with 4 images sampled per identity"
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+
+SOLVER:
+  # 4.2: "using Adam"
+  OPTIMIZER_NAME: 'Adam'
+  # 4.2: "We train for 60 epochs"
+  MAX_EPOCHS: 60
+  # 4.2: "3.5e-4 for randomly initialized modules and 5e-6 for pre-trained
+  #       components"  -- BASE_LR is the head, PRETRAINED_LR the CLIP tower.
+  BASE_LR: 0.00035
+  PRETRAINED_LR: 0.000005
+  BIAS_LR_FACTOR: 1
+  # 4.2: "a batch size of 64"
+  IMS_PER_BATCH: 64
+  # 4.2: "A warm-up strategy with 100 iterations is applied before the cosine
+  #       learning rate schedule."
+  WARMUP_ITERS: 100
+  WARMUP_METHOD: 'linear'
+  LARGE_FC_LR: False
+  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  CHECKPOINT_PERIOD: 60
+  LOG_PERIOD: 50
+  # Every fifth epoch: the kill criterion is "rank1 has not moved by epoch 15",
+  # and a ten-epoch period would make that a coin flip between 10 and 20.
+  EVAL_PERIOD: 5
+  # Plain CE + triplet, no ProCA/GPD: that is what "baseline" means in table 4.
+  LOSS_TYPE: "base"
+  # [VARIABLE] the twin contrastive loss.  1.0, not the 25 whu_twin used for
+  # its cosine regression: that form starts at 0.014 and needs the multiplier,
+  # this one is a cross entropy over 61 candidates starting at 1.810, so 1.0
+  # already puts it at roughly a quarter of CE (~6.2) plus triplet (~0.58).
+  # [VARIABLE vs whu_tnce_lam25_re] 0.0 -- the loss is never applied and its
+  # forward pass does not run, so the Twin-NCE lines are absent from the log.
+  # Their absence is the on-site evidence that this is the control corner.
+  TNCE_WEIGHT: 0.0
+  # [VARIABLE] measured, not conventional.  The cosine gap between a twin and
+  # the HARDEST of 60 strangers is 0.0026 (diag/twin_infonce_probe.py), so
+  # 0.003 makes that a logit gap of order one.  At 0.05-0.07 the same probe put
+  # the loss 4.5% below its ceiling -- a flat softmax with no usable gradient.
+  TNCE_TAU: 0.003
+
+TEST:
+  EVAL: True
+  IMS_PER_BATCH: 1024
+  RE_RANKING: False
+  WEIGHT: 'transformer_60.pth'
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+
+OUTPUT_DIR: './logs/whu_tnce_ctrl_re'

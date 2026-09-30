@@ -1,0 +1,13 @@
+.DS_Store
+__pycache__/
+logs/
+.vscode/
+*.py[cod]
+*.pth
+*.pt
+*.ckpt
+*.npy
+*.tmp
+/semi.txt
+/trajectory_vtc.txt
+/trajectory_vtc1.txt

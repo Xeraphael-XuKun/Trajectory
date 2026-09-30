@@ -1,0 +1,131 @@
+# 拆开 CE 的类别：按视角（航拍 / 地面）
+#
+#   bash run_hihr.sh whu_ce_view
+#
+# Derived from hihr_whu_recipe_hihr.yml (10.23 / 26.68), which is the control.
+#
+# THE IDEA.  Cross entropy currently forces every image of an identity -- three
+# spectra, two viewpoints -- onto one logit.  That is a very strong demand, and
+# meeting it approximately is one reason the whole feature cloud sits in a
+# narrow cone: mean pairwise cosine 0.9819, against 0.6179 for the original
+# CLIP.  What decides retrieval is the margin inside that cone, and it is only
+# 28 percent -- d_same 0.1489 against d_diffpid 0.1906, so the correct answer
+# and a stranger are barely apart while ninety thousand strangers compete.
+#
+# So the classifier stops being asked to merge them: `label = pid * slots +
+# slot`, where slot encodes the view and/or the spectrum.
+#
+# WHAT IS DELIBERATELY NOT CHANGED.  The triplet keeps the raw pid.  The whole
+# division of labour is that the metric loss goes on pulling a person's spectra
+# and viewpoints together while the classifier concentrates on telling people
+# apart within one condition.  Splitting both would leave nothing aligning
+# anything, and it would almost certainly collapse.
+#
+# THAT IS ALSO THE RISK.  The triplet's constraint is already satisfied --
+# d_cross(RGB,Th) 1.125 is below d_diffpid 1.273 and the soft margin has
+# stopped producing gradient -- so with CE letting go, cross-view and
+# cross-spectrum alignment may have nothing holding it.  The A/G view matrix
+# and the 3x3 modality matrix are what say whether that happened.
+#
+# WHAT TO READ FIRST, in epoch 1, before any mAP:
+#
+#     Epoch[N]  768d d_same=..  d_cross(..)=..  d_diffpid=..
+#
+# `d_diffpid / d_same` is 1.28 in the unsplit run.  If it RISES, the cloud has
+# opened up and the mechanism is real.  If it does not move, the diagnosis was
+# wrong and the run can be stopped in twenty minutes.
+#
+# ONE READING TRAP: the `Acc` printed in the log is classification accuracy over
+# 2x more classes than the baseline has, so it drops mechanically.  That is
+# not degradation.
+#
+# COSTS NOTHING AT INFERENCE: TEST.NECK_FEAT 'before' means retrieval reads the
+# pre-BNNeck feature and the classifier is never called; `load_param` already
+# skips `classifier` keys unconditionally, so the changed width does not affect
+# transfer from the CARGO checkpoint either.
+#
+# Samples per class (train split is 92,133 images over 500 identities):
+#     500 -> 1000 classes, ~92 images each -- but the aerial cameras are 2
+#     of 7, so the aerial classes are the thin ones (~26) and the ground
+#     ones the fat ones (~66).  Unbalanced on purpose: that is the data.
+#
+MODEL:
+  PRETRAIN_CHOICE: 'self'
+  # Overridden on the command line by run_hihr.sh; this is only the default.
+  PRETRAIN_PATH: './out_hihr_cargo_base/transformer_60.pth'
+  # 4.2: "We adopt the CLIP-ViT-B/16 as the visual and text encoder."
+  TRANSFORMER_TYPE: 'vit_base_clip'
+  # [RECIPE] HiHR section 4.4: "cross-entropy loss and triplet loss".
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  STRIDE_SIZE: [16, 16]
+  # [VARIABLE] the only deliberate change from the baseline config.
+  CE_SPLIT_VIEW: True
+  CE_SPLIT_MODALITY: False
+
+INPUT:
+  # 4.2: "images are resized to 256 x 128 x 3"
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  # 4.2: "random horizontal flipping, random cropping and random erasing"
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
+  # CLIP's own normalisation -- the tower was fitted to these statistics.
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+
+DATASETS:
+  # [VARIABLE] required by CE_SPLIT_VIEW: with this empty every image
+  # counts as ground and the split is a no-op that looks identical to
+  # the baseline in every line of the log.  do_train hard-fails on it.
+  # Zero-based, matching c6/c7 in the paper.
+  AERIAL_CAMS: [5, 6]
+  NAMES: ('WHU-MARS')
+  ROOT_DIR: ('/data')
+  MODALITIES: ['RGB', 'IR', 'Thermal']
+
+DATALOADER:
+  SAMPLER: 'PKM'
+  # 4.2: "with 4 images sampled per identity"
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+
+SOLVER:
+  # 4.2: "using Adam"
+  OPTIMIZER_NAME: 'Adam'
+  # 4.2: "We train for 60 epochs"
+  MAX_EPOCHS: 60
+  # 4.2: "3.5e-4 for randomly initialized modules and 5e-6 for pre-trained
+  #       components"  -- BASE_LR is the head, PRETRAINED_LR the CLIP tower.
+  BASE_LR: 0.00035
+  PRETRAINED_LR: 0.000005
+  BIAS_LR_FACTOR: 1
+  # 4.2: "a batch size of 64"
+  IMS_PER_BATCH: 64
+  # 4.2: "A warm-up strategy with 100 iterations is applied before the cosine
+  #       learning rate schedule."
+  WARMUP_ITERS: 100
+  WARMUP_METHOD: 'linear'
+  LARGE_FC_LR: False
+  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  CHECKPOINT_PERIOD: 60
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 10
+  # Plain CE + triplet, no ProCA/GPD: that is what "baseline" means in table 4.
+  LOSS_TYPE: "base"
+
+TEST:
+  EVAL: True
+  IMS_PER_BATCH: 1024
+  RE_RANKING: False
+  WEIGHT: 'transformer_60.pth'
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+
+OUTPUT_DIR: './logs/whu_ce_view'

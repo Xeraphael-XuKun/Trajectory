@@ -1,0 +1,165 @@
+# 方向二换轴：CLIP 文本引导的 *模态* 矫正 —— lambda = 5.0
+#
+#   bash run_hihr.sh whu_mcam
+#
+# Derived from hihr_whu_text_lam50.yml (mAP 10.45 / R-1 27.35).  That run is
+# the control and this one is the same machinery with the axis swapped: the two
+# viewpoint words become three spectrum words, so the number of learnable
+# vectors goes from 6 (aerial + ground + 4 shared) to 7 (color + infrared +
+# thermal + 4 shared).  Everything else -- backbone, actuator, optimiser,
+# schedule, lambda, initialisation -- is inherited unchanged.
+#
+#                 before (no delta)     after (delta applied)
+#   color image     -> color                 -> color
+#   infrared        -> infrared              -> color
+#   thermal         -> thermal               -> color
+#
+# Same shape as the view form: the "before" column keeps the three anchors
+# apart (computed on the UNCORRECTED feature, so satisfying it forces the
+# backbone to keep the spectra separable), and only the bottom two "after"
+# cells ask for a change.  f_before and f_after come from the same image and
+# the same weights, so the only thing that can separate them is the positional
+# delta -- which is what makes this a constraint on the delta, not on the
+# backbone.
+#
+# Why the axis is worth swapping (measured 2026-08-07, diag/analyse_modality.py
+# section [2b], on feats_whu_recipe_hihr): with the identity, the instant, the
+# camera and the pose all held fixed, an RGB image and its thermal twin sit
+# 0.1549 apart, against 0.1906 for two different people and 0.1109 for the
+# easiest same-modality pair.  The spectrum alone therefore eats 55% of the
+# usable margin -- as much as changing camera does (48%).  The view axis was
+# aimed at a gap that measurement does not show; this one is not.
+#
+# Wording, vs the `[rgb]` / `[aerial] view` phrasing used before:
+#   1. `rgb` is a colour-space term web captions do not use -- an ordinary
+#      photograph is "a photo", never "an rgb photo" -- so that anchor was the
+#      least grounded of the three.  `color` is what captions actually say.
+#      `infrared` and `thermal` already appear attached to real images.
+#   2. "taken by a [thermal] camera" makes the spectrum a property of the
+#      IMAGING.  The old "a [thermal] person" made it a property of the person,
+#      which read literally is a hot person.
+#
+# Read the training log before the mAP: `cos->color after` moving away from
+# `cos->color before` for the infrared and thermal rows is the correction
+# landing.  `acc(before,=self)` falling is the failure mode to watch -- it means
+# the backbone is letting the spectra merge instead of the delta correcting
+# them.
+
+MODEL:
+  PRETRAIN_CHOICE: 'self'
+  # Overridden on the command line by run_hihr.sh; this is only the default.
+  PRETRAIN_PATH: './out_hihr_cargo_base/transformer_60.pth'
+  # 4.2: "We adopt the CLIP-ViT-B/16 as the visual and text encoder."
+  TRANSFORMER_TYPE: 'vit_base_clip'
+  # [RECIPE] HiHR section 4.4: "cross-entropy loss and triplet loss".
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  STRIDE_SIZE: [16, 16]
+  # [VARIABLE] the only deliberate change from the baseline config
+  PE_LAYERWISE: 'indep'
+  # Leave the inherited table trainable: the baseline trains it, and
+  # freezing it would make this a two-variable comparison.
+  PE_FREEZE_BASE: False
+  # ---- direction two ----
+  TEXT_ALIGN: True
+  # The ORIGINAL CLIP release, not PRETRAIN_PATH: that points at our
+  # CARGO checkpoint, which carries only the image tower.  Overridden
+  # to an absolute path by run_hihr.sh.
+  TEXT_CLIP_PATH: 'ViT-B-16.pt'
+  TEXT_N_CTX: 4
+  # [VARIABLE] the axis.  Sends make_model down the 'modality' branch, where
+  # the single word slot holds the spectrum instead of the viewpoint and every
+  # image in the batch is supervised (192 rows) rather than RGB's 64.
+  TEXT_TARGET: 'modality'
+  # Load-bearing under this target: it names the spectrum everything is
+  # corrected TOWARDS (make_model sets text_target_row from it).  It indexes
+  # DATASETS.MODALITIES, so it is the directory name 'RGB' -- the CLIP word for
+  # that same spectrum is 'color', one line below.  Different namespaces.
+  TEXT_MODALITY: 'RGB'
+  # [VARIABLE] three spectrum words in place of aerial/ground.  Learnable
+  # vectors: 3 + TEXT_N_CTX = 7, against the view form's 2 + 4 = 6.  Order must
+  # match DATASETS.MODALITIES entry for entry -- anchor row m is modality m,
+  # and a mismatch would attach the wrong word to a whole spectrum (make_model
+  # raises on a length mismatch but cannot see a permutation).
+  # Every word must be a SINGLE CLIP token or ViewPrompts raises at startup.
+  TEXT_MODALITY_WORDS: ['color', 'infrared', 'thermal']
+  # [VARIABLE] 5 placeholders: 1 spectrum slot + TEXT_N_CTX shared ones.  Slots
+  # should land at [9, 12, 13, 14, 15] with EOT at 17; ViewPrompts measures them
+  # with the vendored tokenizer and raises if the count is wrong, so a miscount
+  # fails before any training happens.
+  TEXT_TEMPLATE: 'a photo of a person taken by a X camera with X X X X .'
+
+INPUT:
+  # 4.2: "images are resized to 256 x 128 x 3"
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  # 4.2: "random horizontal flipping, random cropping and random erasing"
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
+  # CLIP's own normalisation -- the tower was fitted to these statistics.
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+
+DATASETS:
+  NAMES: ('WHU-MARS')
+  ROOT_DIR: ('/data')
+  MODALITIES: ['RGB', 'IR', 'Thermal']
+  # c6/c7 zero-based.  Confirmed by geometry: median crops 36x57 and
+  # 36x31 against 58-68 x 133-173 on the ground, and c7's aspect ratio
+  # of 1.16 (wider than tall) only happens looking near-straight down.
+  AERIAL_CAMS: [5, 6]
+
+DATALOADER:
+  SAMPLER: 'PKM'
+  # 4.2: "with 4 images sampled per identity"
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+
+SOLVER:
+  # 4.2: "using Adam"
+  OPTIMIZER_NAME: 'Adam'
+  # 4.2: "We train for 60 epochs"
+  MAX_EPOCHS: 60
+  # 4.2: "3.5e-4 for randomly initialized modules and 5e-6 for pre-trained
+  #       components"  -- BASE_LR is the head, PRETRAINED_LR the CLIP tower.
+  BASE_LR: 0.00035
+  PRETRAINED_LR: 0.000005
+  BIAS_LR_FACTOR: 1
+  # 4.2: "a batch size of 64"
+  IMS_PER_BATCH: 64
+  # 4.2: "A warm-up strategy with 100 iterations is applied before the cosine
+  #       learning rate schedule."
+  WARMUP_ITERS: 100
+  WARMUP_METHOD: 'linear'
+  LARGE_FC_LR: False
+  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  CHECKPOINT_PERIOD: 60
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 10
+  # Plain CE + triplet, no ProCA/GPD: that is what "baseline" means in table 4.
+  LOSS_TYPE: "base"
+  # The increments start at zero while everything around them is
+  # pretrained.  1.0 keeps them on the head's 3.5e-4 clock (they are
+  # new modules, not pretrained weights -- see make_optimizer.py).
+  PE_DELTA_LR_MULT: 1.0
+  # [VARIABLE] the only key that differs between the three configs.
+  # Two-class cross entropy (~0.69 at chance) against an identity loss
+  # over hundreds of classes (~6.2 at init, ~4.7 by epoch 2), so this
+  # is roughly 42% of the total.
+  TEXT_LOSS_WEIGHT: 5.0
+
+TEST:
+  EVAL: True
+  IMS_PER_BATCH: 1024
+  RE_RANKING: False
+  WEIGHT: 'transformer_60.pth'
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+
+OUTPUT_DIR: './logs/whu_mcam'

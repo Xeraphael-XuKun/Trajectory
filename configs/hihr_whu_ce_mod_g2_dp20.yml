@@ -1,0 +1,143 @@
+# whu_ce_mod_g2 + 随机深度 0.2
+#
+#   bash run_hihr.sh whu_ce_mod_g2_dp20
+#
+# Derived from hihr_whu_ce_mod_g2.yml; MODEL.DROP_PATH is the only key that
+# differs.  It is absent there, so the run inherits config/defaults.py's 0.1 --
+# a value that came with the repository and was never chosen for this task.
+#
+# WHAT IT DOES.  Stochastic depth: during training each of the twelve
+# transformer blocks is skipped at random with probability rising linearly
+# across depth (vit_pytorch.py:339 spreads the rate over `depth`), so the
+# residual stream passes through untouched.  Nothing happens at inference --
+# DropPath is Identity in eval mode.
+#
+# WHY TWO POINTS.  A single one cannot tell "this key has no purchase" from
+# "0.2 was the wrong amount".  0.2 gains and 0.3 gains more -> keep climbing;
+# 0.2 gains and 0.3 falls back -> the turn is between them; neither moves ->
+# the key is inert here, which is itself a clean answer.
+#
+# This is the arm I expect most from: stochastic depth is the standard ViT
+# regulariser, and the current setting is a default rather than a decision.
+#
+# WHY REGULARISATION, AND WHY NOW.  The epoch sweep diagnosed overfitting, and
+# it did so on two readings at once rather than on mAP alone:
+#
+#     epochs     60      90     120
+#     test mAP  11.58   11.26   10.05
+#     d_diffpid  1.665   2.05    2.59      <- measured on TRAINING batches
+#     d_same     0.055   0.075   0.21         (absolute)
+#
+# The margin between identities keeps improving on data the model has seen
+# while retrieval on the test set falls apart.  That is memorisation, and the
+# reply to it is regularisation -- which this project has never touched.  The
+# strengths in force are the repo defaults nobody chose for this task, and
+# HiHR's recipe turned two of them DOWN from those defaults:
+#
+#     MODEL.DROP_PATH        0.1     defaults.py, never tuned here
+#     MODEL.ATT_DROP_RATE    0.0     off
+#     MODEL.DROP_OUT         0.0     off
+#     SOLVER.WEIGHT_DECAY    1e-4    the recipe lowered it from 5e-4
+#     MODEL.IF_LABELSMOOTH   off     the recipe turned it off, default is on
+#
+# That recipe was fitted on CARGO.  Overfitting on WHU-MARS is measured.
+#
+# HOW TO READ IT, written down before the run.  pooled mAP has to clear 11.78
+# (11.58 plus the 0.2 this project moves for unattributable reasons).  But
+# regularisation has an earlier and more specific signature in the geometry
+# line, readable by epoch 30:
+#
+#     d_diffpid DOWN + mAP UP     working: the training fit loosened and
+#                                 generalisation improved
+#     d_diffpid DOWN + mAP DOWN   too much of it
+#     d_diffpid unmoved           this key has no purchase on this task
+#
+# g2 ends at d_diffpid 1.665.  Overfitting drove that number UP; regularisation
+# should drive it down.
+#
+# COSTS NOTHING AT INFERENCE: stochastic depth and both dropouts are training-
+# time only, and label smoothing and weight decay change no forward pass.
+#
+# CONTROLS (training-log numbers, epoch 60):
+#     whu_recipe_hihr    10.23 / 26.68     unsplit CE
+#     whu_ce_mod_g2      11.58 / 32.71     the base of this sweep
+#     whu_ce_mod_g2_tri2 11.74 / 32.16     best mAP so far
+#
+MODEL:
+  PRETRAIN_CHOICE: 'self'
+  # Overridden on the command line by run_hihr.sh; this is only the default.
+  PRETRAIN_PATH: './out_hihr_cargo_base/transformer_60.pth'
+  # 4.2: "We adopt the CLIP-ViT-B/16 as the visual and text encoder."
+  TRANSFORMER_TYPE: 'vit_base_clip'
+  # [RECIPE] HiHR section 4.4: "cross-entropy loss and triplet loss".
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  STRIDE_SIZE: [16, 16]
+  CE_SPLIT_VIEW: False
+  CE_SPLIT_MODALITY: True
+  # [VARIABLE] the only deliberate change from hihr_whu_ce_mod.yml.
+  CE_MODALITY_GROUPS: [0, 0, 1]
+  # [VARIABLE] the deliberate change from hihr_whu_ce_mod_g2.yml.
+  DROP_PATH: 0.2
+
+INPUT:
+  # 4.2: "images are resized to 256 x 128 x 3"
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  # 4.2: "random horizontal flipping, random cropping and random erasing"
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
+  # CLIP's own normalisation -- the tower was fitted to these statistics.
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+
+DATASETS:
+  NAMES: ('WHU-MARS')
+  ROOT_DIR: ('/data')
+  MODALITIES: ['RGB', 'IR', 'Thermal']
+
+DATALOADER:
+  SAMPLER: 'PKM'
+  # 4.2: "with 4 images sampled per identity"
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+
+SOLVER:
+  # 4.2: "using Adam"
+  OPTIMIZER_NAME: 'Adam'
+  # 4.2: "We train for 60 epochs"
+  MAX_EPOCHS: 60
+  # 4.2: "3.5e-4 for randomly initialized modules and 5e-6 for pre-trained
+  #       components"  -- BASE_LR is the head, PRETRAINED_LR the CLIP tower.
+  BASE_LR: 0.00035
+  PRETRAINED_LR: 0.000005
+  BIAS_LR_FACTOR: 1
+  # 4.2: "a batch size of 64"
+  IMS_PER_BATCH: 64
+  # 4.2: "A warm-up strategy with 100 iterations is applied before the cosine
+  #       learning rate schedule."
+  WARMUP_ITERS: 100
+  WARMUP_METHOD: 'linear'
+  LARGE_FC_LR: False
+  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  CHECKPOINT_PERIOD: 60
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 10
+  # Plain CE + triplet, no ProCA/GPD: that is what "baseline" means in table 4.
+  LOSS_TYPE: "base"
+
+TEST:
+  EVAL: True
+  IMS_PER_BATCH: 1024
+  RE_RANKING: False
+  WEIGHT: 'transformer_60.pth'
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+
+OUTPUT_DIR: './logs/whu_ce_mod_g2_dp20'
