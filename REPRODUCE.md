@@ -118,15 +118,15 @@ bash run_trajectory.sh test
 根据单卡资源实际空闲情况，每次只启动一条：
 
 ```bash
-bash /mnt/cache/wanghanzhi/XK/Trajectory/server/run_L0_llmpar_benchmark_false.sh
+bash /mnt/cache/wanghanzhi/XK/Trajectory/server/run_L0.sh
 ```
 
 ```bash
-bash /mnt/cache/wanghanzhi/XK/Trajectory/server/run_W0_whu_mars_benchmark_false.sh
+bash /mnt/cache/wanghanzhi/XK/Trajectory/server/run_W0.sh
 ```
 
 ```bash
-bash /mnt/cache/wanghanzhi/XK/Trajectory/server/run_W1_whu_mars_benchmark_true.sh
+bash /mnt/cache/wanghanzhi/XK/Trajectory/server/run_W1.sh
 ```
 
 日志中的 `Runtime:` 行会记录 Python、torch、torchvision、timm、torch CUDA、
