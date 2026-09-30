@@ -132,3 +132,5 @@ bash /mnt/cache/wanghanzhi/XK/Trajectory/server/run_W1.sh
 日志中的 `Runtime:` 行会记录 Python、torch、torchvision、timm、torch CUDA、
 cuDNN、GPU 型号以及 `cudnn_deterministic/cudnn_benchmark` 的实际值。比较时以
 磁盘重载评测为主，并同时核对三组日志中的完整解析配置与这条运行时信息。
+`run_trajectory.sh` 会把大小写形式的 `true/false` 统一转换为 YACS 要求的
+Python 布尔字面量 `True/False`，再写入命令行覆盖配置。
