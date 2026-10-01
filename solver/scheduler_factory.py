@@ -8,9 +8,7 @@ def create_scheduler(cfg, optimizer, iters_per_epoch=None):
     """Cosine schedule with warmup, in either epoch or iteration units.
 
     SOLVER.WARMUP_ITERS > 0 switches the clock to optimizer updates, which is
-    the only way to express HiHR's "warm-up strategy with 100 iterations"
-    (section 4.2): at roughly 1.9k iterations per epoch, epoch granularity can
-    only round that to 0 or to 19x too long.
+    the way this experiment expresses the existing 100-iteration warmup.
 
     The floor and the warmup start are fractions of each parameter group's own
     peak lr rather than one shared number, so a two-tier setup (pretrained

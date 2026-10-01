@@ -84,16 +84,3 @@ def text_align_loss(feat, text, target, logit_scale, margin_pair=None):
             pair = margin_pair.to(cos.device)
             margin = (cos.gather(1, pair[:, 1:2]) - cos.gather(1, pair[:, 0:1])).mean()
     return loss, acc, margin
-
-
-# ---------------------------------------------------------------------------
-# modality target: the same cross entropy, with the axis swapped
-# ---------------------------------------------------------------------------
-def anchor_cos(feat, text):
-    """[N, D] features and [K, D] anchors -> [N, K] cosines, no temperature.
-
-    Deliberately not `view_logits`: these cosines are read straight into the
-    log, and multiplying them by ~100 would only make them harder to compare
-    with each other.  The training loss applies the temperature itself.
-    """
-    return F.normalize(feat.float(), dim=-1) @ F.normalize(text.float(), dim=-1).t()

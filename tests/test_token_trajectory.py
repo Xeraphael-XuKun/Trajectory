@@ -51,10 +51,10 @@ def test_full_backbone_has_no_pld_and_gate_zero_is_exact():
     model = TransReID(
         img_size=(32, 16), patch_size=16, stride_size=16,
         embed_dim=8, depth=3, num_heads=2, mlp_ratio=2,
-        qkv_bias=True, drop_path_rate=0.0, pe_layerwise='none',
+        qkv_bias=True, drop_path_rate=0.0,
         token_trajectory=True, token_trajectory_accel_mix=1.0)
     model.eval()
-    assert model.pos_delta is None
+    assert not hasattr(model, 'pos_delta')
     image = torch.randn(2, 3, 32, 16)
     off_gate = torch.zeros(2)
     with torch.no_grad():

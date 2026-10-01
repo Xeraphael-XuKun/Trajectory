@@ -159,33 +159,6 @@ class CLIPTextEncoder(nn.Module):
         return count
 
 
-@torch.no_grad()
-def encode_fixed_sentences(text_encoder, sentences, tokenizer=None):
-    """Encode literal CLIP sentences without introducing prompt parameters.
-
-    VPR needs a direction that cannot rotate to follow the visual backbone, so
-    unlike ``ViewPrompts`` both the text tower and the token embeddings are
-    fixed.  Row order is exactly the order in ``sentences``.
-    """
-    if not text_encoder.loaded:
-        raise RuntimeError('fixed text anchors require a loaded CLIP text tower')
-    tok = tokenizer if tokenizer is not None else build_tokenizer()
-    rows, eot = [], []
-    for sentence in sentences:
-        ids = [SOT] + tok.encode(sentence) + [EOT]
-        if len(ids) > text_encoder.context_length:
-            raise ValueError('sentence has {} tokens but CLIP accepts at most {}: {!r}'
-                             .format(len(ids), text_encoder.context_length, sentence))
-        eot.append(len(ids) - 1)
-        rows.append(ids + [0] * (text_encoder.context_length - len(ids)))
-    token_ids = torch.tensor(rows, dtype=torch.long,
-                             device=text_encoder.token_embedding.weight.device)
-    embeddings = text_encoder.token_embedding(token_ids)
-    features = text_encoder(
-        embeddings, torch.tensor(eot, dtype=torch.long, device=token_ids.device))
-    return features.float()
-
-
 class ViewPrompts(nn.Module):
     """The view sentences, with learnable slots spliced into a fixed template.
 
