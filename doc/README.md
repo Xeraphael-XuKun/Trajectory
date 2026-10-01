@@ -2,10 +2,12 @@
 
 本项目只保留 WHU-MARS 上的 CLIP ViT-B/16 Baseline、原 dense cross-layer token Trajectory，以及预留的四格 VTC。当前实验不启用 VTC。
 
+项目文档统一存放在 `doc/`；本文中的代码和配置相对路径均以项目根目录为起点。根目录 `AGENTS.md` 用于协作规则加载。
+
 2026-10-01 本轮矩阵为 **2 方法 × 2 normalization × 2 解释器环境 = 8 次独立训练**，每组 60 epoch，再从同一 `transformer_60.pth` 分别测试 pre-BN 和 post-BN，共 16 份最终测试结果。
 
 - [实验方案与结果选择规则](0.八组配对实验方案_1001.md)
-- [服务器预检与启动手册](1.服务器实验启动手册_1001.md)
+- [服务器实验启动手册](1.服务器实验启动手册_1001.md)
 - [代码整理与本地验证记录](2.代码整理与验证记录_1001.md)
 
 | ID | 环境 | normalization | 模型 |
@@ -19,9 +21,9 @@
 | L_C_B | llmpar | CLIP native | Baseline |
 | L_C_T | llmpar | CLIP native | Baseline+Trajectory |
 
-每组完整配置在 `configs/<ID>.yml`，独立前台启动脚本在 `server/run_<ID>.sh`。正式训练入口是 `finetune.py`，独立测试入口是 `test.py`。预检单独执行，训练结束自动串联 pre-BN 和 post-BN 测试。
+每组完整配置在 `configs/<ID>.yml`，独立前台启动脚本在 `server/run_<ID>.sh`。正式训练入口是 `finetune.py`，独立测试入口是 `test.py`。直接执行本组启动脚本即可训练，不需要先运行预检或配置检查，也不读取 `preflight_ok.json`。训练结束自动串联 pre-BN 和 post-BN 测试。
 
-配置检查：
+可选的配置检查（不影响正式启动）：
 
 ```bash
 /mnt/cache/wanghanzhi/envs/whu_mars/bin/python3 /mnt/cache/wanghanzhi/XK/Trajectory/tools/verify_matrix.py

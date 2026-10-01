@@ -43,6 +43,8 @@ def evaluate(cfg, model, val_loaders, num_querys, logger):
 
 def do_train(cfg, model, train_loader, val_loaders, optimizer, scheduler, loss_fn, num_querys):
     logger = logging.getLogger('transreid.train')
+    write_json(Path(cfg.OUTPUT_DIR) / 'training_summary.json', {
+        'complete': False, 'experiment_id': cfg.EXPERIMENT.ID, 'epochs_completed': 0})
     model.cuda()
     scaler = amp.GradScaler()
     iterations, skipped = 0, 0

@@ -15,7 +15,7 @@ def main():
     args = parser.parse_args()
     cfg = load_config(args.config_file, args.opts)
     cfg.freeze()
-    prepare_run(cfg, training=False)
+    prepare_run(cfg)
     logger = setup_logger('transreid', cfg.OUTPUT_DIR, if_train=False)
     logger.info(runtime_summary())
     logger.info('Running with config:\n%s', cfg)

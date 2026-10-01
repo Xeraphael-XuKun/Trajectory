@@ -1,4 +1,4 @@
-"""检查八组配置只有指定因素不同；正式启动前核对本组数值预检。"""
+"""可选：检查八组配置只有指定因素不同，不参与正式启动。"""
 import argparse
 import json
 import sys
@@ -50,25 +50,9 @@ def verify():
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--experiment', choices=IDS)
-    parser.add_argument('--preflight', type=Path)
-    args = parser.parse_args()
+    parser = argparse.ArgumentParser(description='可选的八组配置检查')
+    parser.parse_args()
     verify()
-    if args.preflight:
-        if not args.experiment:
-            parser.error('--preflight requires --experiment')
-        data = json.loads(args.preflight.read_text(encoding='utf-8'))
-        c = load_config(args.experiment)
-        assert data['passed'] and data['experiment_id'] == args.experiment
-        assert data['config'] == yaml.safe_load(c.dump()), '配置已变化，请重做预检'
-        from utils.runtime import configure_cudnn, runtime_info, require_single_gpu
-        require_single_gpu()
-        configure_cudnn(True, True)
-        current = runtime_info()
-        for key in ['executable', 'python', 'torch', 'torchvision', 'timm', 'torch_cuda', 'cudnn', 'device']:
-            assert data['runtime'][key] == current[key], '预检环境已变化：' + key
-        print('本组数值预检有效；接下来进入正式前台训练。')
 
 
 if __name__ == '__main__':

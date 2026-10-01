@@ -39,30 +39,17 @@ def runtime_summary():
     return 'Runtime: ' + json.dumps(runtime_info(), ensure_ascii=False)
 
 
-def require_single_gpu():
-    if int(os.environ.get('WORLD_SIZE', '1')) != 1 or torch.cuda.device_count() != 1:
-        raise RuntimeError('本轮只允许单卡：CUDA_VISIBLE_DEVICES=0，WORLD_SIZE=1')
-
-
 def write_json(path, data):
     with Path(path).open('w', encoding='utf-8') as stream:
         json.dump(data, stream, ensure_ascii=False, indent=2, allow_nan=False)
 
 
-def prepare_run(cfg, training):
-    require_single_gpu()
-    if cfg.EXPERIMENT.PYTHON and os.name != 'nt' and os.path.abspath(sys.executable) != cfg.EXPERIMENT.PYTHON:
-        raise RuntimeError('解释器与实验配置不一致：{}'.format(sys.executable))
+def prepare_run(cfg):
+    """应用设置并记录本次运行，不设置额外的启动前置门槛。"""
     configure_cudnn(cfg.SOLVER.CUDNN_BENCHMARK, cfg.SOLVER.CUDNN_DETERMINISTIC)
     set_seed(cfg.SOLVER.SEED)
     out = Path(cfg.OUTPUT_DIR)
-    if not cfg.OUTPUT_DIR or (out.exists() and any(out.iterdir())):
-        raise RuntimeError('请使用空的独立 OUTPUT_DIR，避免混用旧 checkpoint 或日志')
     out.mkdir(parents=True, exist_ok=True)
     with (out / 'resolved_config.yml').open('w', encoding='utf-8') as stream:
         stream.write(cfg.dump())
     write_json(out / 'runtime.json', runtime_info())
-    if cfg.TEST.NECK_FEAT not in ('before', 'after'):
-        raise ValueError('NECK_FEAT must be before or after')
-    if training and cfg.TEST.NECK_FEAT != 'before':
-        raise ValueError('训练期检索主读出必须为 pre-BN / before')

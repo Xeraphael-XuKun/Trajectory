@@ -26,7 +26,7 @@ def main():
     original_config = cfg.dump()
     cfg.OUTPUT_DIR = args.output_dir
     cfg.freeze()
-    prepare_run(cfg, training=False)
+    prepare_run(cfg)
     train_loader, val_loaders, _, num_classes = make_dataloader(cfg)
     model = make_model(cfg, num_classes).cuda()
     loss_fn = make_loss(cfg, num_classes)

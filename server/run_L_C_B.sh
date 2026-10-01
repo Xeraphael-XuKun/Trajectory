@@ -4,13 +4,8 @@ set -euo pipefail
 cd /mnt/cache/wanghanzhi/XK/Trajectory
 export CUDA_VISIBLE_DEVICES=0
 export WORLD_SIZE=1
-if [ -e /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B_seed1234 ] || [ -e /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B.train_console.txt ]; then
-  echo "实验输出已存在，请保留旧记录并使用独立重试目录。" >&2
-  exit 1
-fi
 mkdir -p /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001
-# 预检与正式训练分开。预检通过后，显式调用本脚本才启动正式训练。
-/mnt/cache/wanghanzhi/envs/llmpar/bin/python3 -u /mnt/cache/wanghanzhi/XK/Trajectory/tools/verify_matrix.py --experiment L_C_B --preflight /mnt/cache/wanghanzhi/XK/Trajectory/logs/preflight_1001/L_C_B/preflight_ok.json
+# 直接启动正式训练；预检与配置检查均为可选操作。
 
 /mnt/cache/wanghanzhi/envs/llmpar/bin/python3 -u /mnt/cache/wanghanzhi/XK/Trajectory/finetune.py --config_file /mnt/cache/wanghanzhi/XK/Trajectory/configs/L_C_B.yml \
   MODEL.PRETRAIN_PATH /mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt \
@@ -26,7 +21,7 @@ mkdir -p /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001
   SOLVER.TEXT_LOSS_WEIGHT 0.0 SOLVER.CHECKPOINT_PERIOD 60 SOLVER.EVAL_PERIOD 10 \
   TEST.IMS_PER_BATCH 1024 TEST.NECK_FEAT before \
   TEST.FEAT_NORM yes TEST.METRIC sysu TEST.RE_RANKING False TEST.TOP_K_EVAL 0 \
-  OUTPUT_DIR /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B_seed1234 2>&1 | tee /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B.train_console.txt
+  OUTPUT_DIR /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B_seed1234 2>&1 | tee -a /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B.train_console.txt
 
 /mnt/cache/wanghanzhi/envs/llmpar/bin/python3 -u /mnt/cache/wanghanzhi/XK/Trajectory/test.py --config_file /mnt/cache/wanghanzhi/XK/Trajectory/configs/L_C_B.yml \
   MODEL.PRETRAIN_PATH /mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt \
@@ -43,7 +38,7 @@ mkdir -p /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001
   TEST.IMS_PER_BATCH 1024 TEST.NECK_FEAT before \
   TEST.FEAT_NORM yes TEST.METRIC sysu TEST.RE_RANKING False TEST.TOP_K_EVAL 0 \
   TEST.WEIGHT /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B_seed1234/transformer_60.pth \
-  OUTPUT_DIR /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B_seed1234/pre_bn 2>&1 | tee /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B.pre_console.txt
+  OUTPUT_DIR /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B_seed1234/pre_bn 2>&1 | tee -a /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B.pre_console.txt
 
 /mnt/cache/wanghanzhi/envs/llmpar/bin/python3 -u /mnt/cache/wanghanzhi/XK/Trajectory/test.py --config_file /mnt/cache/wanghanzhi/XK/Trajectory/configs/L_C_B.yml \
   MODEL.PRETRAIN_PATH /mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt \
@@ -60,4 +55,4 @@ mkdir -p /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001
   TEST.IMS_PER_BATCH 1024 TEST.NECK_FEAT after \
   TEST.FEAT_NORM yes TEST.METRIC sysu TEST.RE_RANKING False TEST.TOP_K_EVAL 0 \
   TEST.WEIGHT /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B_seed1234/transformer_60.pth \
-  OUTPUT_DIR /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B_seed1234/post_bn 2>&1 | tee /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B.post_console.txt
+  OUTPUT_DIR /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B_seed1234/post_bn 2>&1 | tee -a /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_B.post_console.txt

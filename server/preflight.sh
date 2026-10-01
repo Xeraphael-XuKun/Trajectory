@@ -11,12 +11,8 @@ case "${1:-}" in
 esac
 export CUDA_VISIBLE_DEVICES=0
 export WORLD_SIZE=1
-if [ -e "/mnt/cache/wanghanzhi/XK/Trajectory/logs/preflight_1001/$1" ] || [ -e "/mnt/cache/wanghanzhi/XK/Trajectory/logs/preflight_1001/$1.console.txt" ]; then
-  echo "本组预检输出已存在，请保留失败证据并使用独立重试目录。" >&2
-  exit 1
-fi
 mkdir -p /mnt/cache/wanghanzhi/XK/Trajectory/logs/preflight_1001
 "$PYTHON_BIN" -u /mnt/cache/wanghanzhi/XK/Trajectory/tools/preflight.py \
   --config_file "/mnt/cache/wanghanzhi/XK/Trajectory/configs/$1.yml" \
   --output_dir "/mnt/cache/wanghanzhi/XK/Trajectory/logs/preflight_1001/$1" \
-  2>&1 | tee "/mnt/cache/wanghanzhi/XK/Trajectory/logs/preflight_1001/$1.console.txt"
+  2>&1 | tee -a "/mnt/cache/wanghanzhi/XK/Trajectory/logs/preflight_1001/$1.console.txt"

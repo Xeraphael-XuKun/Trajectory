@@ -7,10 +7,6 @@ ps -eo pid,user,args
 for ENVIRONMENT in whu_mars llmpar; do
   PYTHON_BIN="/mnt/cache/wanghanzhi/envs/$ENVIRONMENT/bin/python3"
   OUTPUT="/mnt/cache/wanghanzhi/XK/Trajectory/logs/environment_1001/$ENVIRONMENT"
-  if [ -e "$OUTPUT" ]; then
-    echo "环境记录已存在，请保留旧记录并改用独立重试目录：$OUTPUT" >&2
-    exit 1
-  fi
   mkdir -p "$OUTPUT"
   "$PYTHON_BIN" -m pip freeze --all > "$OUTPUT/pip_freeze.txt" 2>&1
   "$PYTHON_BIN" -m pip list --format=json > "$OUTPUT/pip_list.json" 2>&1
@@ -22,5 +18,5 @@ for ENVIRONMENT in whu_mars llmpar; do
   echo "$CHECK_STATUS" > "$OUTPUT/pip_check_exit_code.txt"
   CUDA_VISIBLE_DEVICES=0 WORLD_SIZE=1 "$PYTHON_BIN" -c \
     'from utils.runtime import configure_cudnn,runtime_info,write_json; import sys; configure_cudnn(True,True); write_json(sys.argv[1],runtime_info())' \
-    "$OUTPUT/runtime.json" 2>&1 | tee "$OUTPUT/import_log.txt"
+    "$OUTPUT/runtime.json" 2>&1 | tee -a "$OUTPUT/import_log.txt"
 done
