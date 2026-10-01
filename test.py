@@ -1,34 +1,64 @@
-"""加载同一 epoch-60 checkpoint，使用 before 或 after 独立检索。"""
+import os
+from config import cfg
 import argparse
-from config import load_config
 from datasets import make_dataloader
 from model import make_model
 from processor import do_inference
 from utils.logger import setup_logger
-from utils.runtime import prepare_run, runtime_summary
+from utils.runtime import configure_cudnn, runtime_summary
 
 
-def main():
-    parser = argparse.ArgumentParser(description='pre-BN / post-BN 独立测试')
-    parser.add_argument('--config_file', required=True)
-    parser.add_argument('opts', nargs=argparse.REMAINDER)
+def setup_cuda_visible_devices(cfg):
+    env_devices = os.environ.get('CUDA_VISIBLE_DEVICES')
+    alias_devices = os.environ.get('CUDA_VISIBLE_DEVICE')
+    if env_devices:
+        return
+    if alias_devices:
+        os.environ['CUDA_VISIBLE_DEVICES'] = alias_devices
+    elif cfg.MODEL.DEVICE_ID:
+        os.environ['CUDA_VISIBLE_DEVICES'] = cfg.MODEL.DEVICE_ID
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="ReID Baseline Training")
+    parser.add_argument(
+        "--config_file", default="", help="path to config file", type=str
+    )
+    parser.add_argument("opts", help="Modify config options using the command-line", default=None,
+                        nargs=argparse.REMAINDER)
+
     args = parser.parse_args()
-    cfg = load_config(args.config_file, args.opts)
+
+
+    if args.config_file != "":
+        cfg.merge_from_file(args.config_file)
+    cfg.merge_from_list(args.opts)
     cfg.freeze()
-    prepare_run(cfg)
-    logger = setup_logger('transreid', cfg.OUTPUT_DIR, if_train=False)
+
+    setup_cuda_visible_devices(cfg)
+    configure_cudnn(cfg.SOLVER.CUDNN_BENCHMARK)
+
+    output_dir = cfg.OUTPUT_DIR
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    logger = setup_logger("transreid", output_dir, if_train=False)
+    logger.info(args)
     logger.info(runtime_summary())
-    logger.info('Running with config:\n%s', cfg)
-    _, val_loaders, num_querys, num_classes = make_dataloader(cfg)
-    # 测试直接完整加载训练权重，不先重复读取 CLIP 初始化权重。
-    model_cfg = cfg.clone()
-    model_cfg.defrost()
-    model_cfg.MODEL.PRETRAIN_CHOICE = 'no'
-    model_cfg.freeze()
-    model = make_model(model_cfg, num_classes)
+
+    if args.config_file != "":
+        logger.info("Loaded configuration file {}".format(args.config_file))
+        with open(args.config_file, 'r') as cf:
+            config_str = "\n" + cf.read()
+            logger.info(config_str)
+    logger.info("Running with config:\n{}".format(cfg))
+
+    train_loader, train_loader_normal, val_loader, num_query, num_classes, camera_num, view_num = make_dataloader(cfg)
+
+    model = make_model(cfg, num_class=num_classes, camera_num=camera_num, view_num = view_num)
     model.load_param(cfg.TEST.WEIGHT)
-    do_inference(cfg, model, val_loaders, num_querys)
 
-
-if __name__ == '__main__':
-    main()
+    do_inference(cfg,
+                 model,
+                 val_loader,
+                 num_query)

@@ -1,90 +1,75 @@
-# L_C_T：llmpar，clip，Baseline+Trajectory。本轮 VTC 关闭。
-DATALOADER:
-  NUM_INSTANCE: 4
-  NUM_WORKERS: 8
-  SAMPLER: PKM
-DATASETS:
-  AERIAL_CAMS:
-  - 5
-  - 6
-  MODALITIES:
-  - RGB
-  - IR
-  - Thermal
-  NAMES: WHU-MARS
-  PROTOCOL: ALL
-  ROOT_DIR: /mnt/cache/wanghanzhi/Datasets
-  SUBDIR: WHU-MARS
-EXPERIMENT:
-  ENVIRONMENT: llmpar
-  ID: L_C_T
-  NORMALIZATION: clip
-  PYTHON: /mnt/cache/wanghanzhi/envs/llmpar/bin/python3
+# Based on whu_trajectory_only.yml at 0158be2; VTC disabled for this matrix.
+# L=llmpar, W=whu_mars; S=symmetric, C=CLIP native; B=Baseline, T=Trajectory.
+
+MODEL:
+  PRETRAIN_CHOICE: 'imagenet'
+  PRETRAIN_PATH: 'ViT-B-16.pt'
+  TRANSFORMER_TYPE: 'vit_base_clip'
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  STRIDE_SIZE: [16, 16]
+  PE_LAYERWISE: 'none'
+  TOKEN_TRAJECTORY: True
+  TOKEN_TRAJECTORY_ACCEL_MIX: 1.0
+  PE_FREEZE_BASE: False
+
+  TEXT_ALIGN: False
+  TEXT_CLIP_PATH: 'ViT-B-16.pt'
+  TEXT_N_CTX: 4
+  TEXT_MODALITY: 'RGB'
+  TEXT_TEMPLATE: 'a photo of a X view person with X X X X .'
+
 INPUT:
-  PADDING: 10
-  PIXEL_MEAN:
-  - 0.48145466
-  - 0.4578275
-  - 0.40821073
-  PIXEL_STD:
-  - 0.26862954
-  - 0.26130258
-  - 0.27577711
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
   PROB: 0.5
   RE_PROB: 0.5
-  SIZE_TEST:
-  - 256
-  - 128
-  SIZE_TRAIN:
-  - 256
-  - 128
-MODEL:
-  ATT_DROP_RATE: 0.0
-  DROP_OUT: 0.0
-  DROP_PATH: 0.1
-  ID_LOSS_WEIGHT: 1.0
-  NAME: transformer
-  PRETRAIN_CHOICE: imagenet
-  PRETRAIN_PATH: /mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt
-  STRIDE_SIZE:
-  - 16
-  - 16
-  TEXT_ALIGN: false
-  TEXT_CLIP_PATH: /mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt
-  TEXT_MODALITY: RGB
-  TEXT_N_CTX: 4
-  TEXT_TEMPLATE: a photo of a X view person with X X X X .
-  TOKEN_TRAJECTORY: true
-  TOKEN_TRAJECTORY_ACCEL_MIX: 1.0
-  TRANSFORMER_TYPE: vit_base_clip
-  TRIPLET_LOSS_WEIGHT: 1.0
-OUTPUT_DIR: /mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_1001/L_C_T_seed1234
+  PADDING: 10
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+
+DATASETS:
+  NAMES: ('WHU-MARS')
+  ROOT_DIR: ('/data')
+  MODALITIES: ['RGB', 'IR', 'Thermal']
+  AERIAL_CAMS: [5, 6]
+
+DATALOADER:
+  SAMPLER: 'PKM'
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+
 SOLVER:
-  BASE_LR: 0.00035
-  BIAS_LR_FACTOR: 1.0
-  CHECKPOINT_PERIOD: 60
-  CUDNN_BENCHMARK: true
-  CUDNN_DETERMINISTIC: true
-  EVAL_PERIOD: 10
-  IMS_PER_BATCH: 64
-  LOG_PERIOD: 50
-  LR_MIN_FACTOR: 0.002
-  MAX_EPOCHS: 60
-  OPTIMIZER_NAME: Adam
-  PE_DELTA_LR_MULT: 1.0
-  PRETRAINED_LR: 5.0e-06
+  OPTIMIZER_NAME: 'Adam'
   SEED: 1234
-  TEXT_LOSS_WEIGHT: 0.0
-  WARMUP_EPOCHS: 5
+  CUDNN_BENCHMARK: True
+  MAX_EPOCHS: 60
+  BASE_LR: 0.00035
+  PRETRAINED_LR: 0.000005
+  BIAS_LR_FACTOR: 1
+  IMS_PER_BATCH: 64
   WARMUP_ITERS: 100
-  WARMUP_LR_FACTOR: 0.01
-  WEIGHT_DECAY: 0.0001
-  WEIGHT_DECAY_BIAS: 0.0001
+  WARMUP_METHOD: 'linear'
+  LARGE_FC_LR: False
+  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  CHECKPOINT_PERIOD: 60
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 10
+  LOSS_TYPE: 'base'
+  PE_DELTA_LR_MULT: 1.0
+  TEXT_LOSS_WEIGHT: 0.0
+
 TEST:
-  FEAT_NORM: 'yes'
+  EVAL: True
   IMS_PER_BATCH: 1024
-  METRIC: sysu
-  NECK_FEAT: before
-  RE_RANKING: false
-  TOP_K_EVAL: 0
-  WEIGHT: ''
+  RE_RANKING: False
+  WEIGHT: 'transformer_60.pth'
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+
+OUTPUT_DIR: './logs/matrix_minimal_1001/L_C_T_seed1234'

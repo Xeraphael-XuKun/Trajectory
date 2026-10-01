@@ -1,5 +1,6 @@
-# Based on whu_trajectory_only.yml at 0158be2; VTC disabled for this matrix.
-# L=llmpar, W=whu_mars; S=symmetric, C=CLIP native; B=Baseline, T=Trajectory.
+# Matched control for configs/whu_trajectory_vtc.yml.
+# The image backbone, direct dense Trajectory actuator, data recipe, optimizer,
+# seed and evaluator are unchanged.  Only the VTC branch/loss is disabled.
 
 MODEL:
   PRETRAIN_CHOICE: 'imagenet'
@@ -17,6 +18,8 @@ MODEL:
   TOKEN_TRAJECTORY_ACCEL_MIX: 1.0
   PE_FREEZE_BASE: False
 
+  # Single experimental change: do not construct prompts or run the
+  # trajectory-off auxiliary pass.
   TEXT_ALIGN: False
   TEXT_CLIP_PATH: 'ViT-B-16.pt'
   TEXT_N_CTX: 4
@@ -29,8 +32,8 @@ INPUT:
   PROB: 0.5
   RE_PROB: 0.5
   PADDING: 10
-  PIXEL_MEAN: [0.5, 0.5, 0.5]
-  PIXEL_STD: [0.5, 0.5, 0.5]
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
 
 DATASETS:
   NAMES: ('WHU-MARS')
@@ -45,8 +48,6 @@ DATALOADER:
 
 SOLVER:
   OPTIMIZER_NAME: 'Adam'
-  SEED: 1234
-  CUDNN_BENCHMARK: True
   MAX_EPOCHS: 60
   BASE_LR: 0.00035
   PRETRAINED_LR: 0.000005
@@ -59,6 +60,7 @@ SOLVER:
   WEIGHT_DECAY_BIAS: 1e-4
   CHECKPOINT_PERIOD: 60
   LOG_PERIOD: 50
+  # Match the resolved configuration recorded in trajectory_vtc.txt.
   EVAL_PERIOD: 10
   LOSS_TYPE: 'base'
   PE_DELTA_LR_MULT: 1.0
@@ -72,4 +74,4 @@ TEST:
   NECK_FEAT: 'before'
   FEAT_NORM: 'yes'
 
-OUTPUT_DIR: './logs/matrix_minimal_1001/W_S_T_seed1234'
+OUTPUT_DIR: './logs/whu_trajectory_only'
