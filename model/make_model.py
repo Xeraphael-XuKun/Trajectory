@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from .backbones.vit_pytorch import vit_base_in, vit_base_clip, vit_ics_lup
+from .backbones.token_trajectory_variants import validate_trajectory_config
 
 def weights_init_kaiming(m):
     classname = m.__class__.__name__
@@ -81,6 +82,7 @@ class build_transformer(nn.Module):
         self.test_mod_delta = cfg.TEST.MOD_DELTA
         self.use_vpr = bool(cfg.MODEL.VPR)
         self.use_token_trajectory = bool(cfg.MODEL.TOKEN_TRAJECTORY)
+        validate_trajectory_config(cfg)
         self.vpr_view_text = bool(cfg.MODEL.VPR_VIEW_TEXT) and self.use_vpr
         self.vpr_csd = bool(cfg.MODEL.VPR_CSD) and self.use_vpr
         self.vpr_aerial_only = bool(cfg.MODEL.VPR_AERIAL_ONLY)
@@ -132,6 +134,10 @@ class build_transformer(nn.Module):
                                                         mod_delta_modalities=n_mod_delta,
                                                         token_trajectory=self.use_token_trajectory,
                                                         token_trajectory_accel_mix=cfg.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX,
+                                                        token_trajectory_variant=cfg.MODEL.TOKEN_TRAJECTORY_VARIANT,
+                                                        token_trajectory_ema_decay=cfg.MODEL.TOKEN_TRAJECTORY_EMA_DECAY,
+                                                        token_trajectory_hidden_dim=cfg.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM,
+                                                        token_trajectory_rank=cfg.MODEL.TOKEN_TRAJECTORY_RANK,
                                                         vpr=self.use_vpr,
                                                         vpr_rank=cfg.MODEL.VPR_RANK,
                                                         vpr_conditional=cfg.MODEL.VPR_CONDITIONAL,
@@ -145,6 +151,15 @@ class build_transformer(nn.Module):
             print('Dense Cross-layer Token Trajectory: accel_mix {}, {:,} params'
                   .format(cfg.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX,
                           self.base.token_trajectory.trajectory_parameters))
+            if cfg.MODEL.TOKEN_TRAJECTORY_VARIANT != 'dense':
+                settings = {
+                    'ema': 'ema_decay {}'.format(cfg.MODEL.TOKEN_TRAJECTORY_EMA_DECAY),
+                    'token_gate': 'hidden {}'.format(cfg.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM),
+                    'channel_mix': 'rank {}'.format(cfg.MODEL.TOKEN_TRAJECTORY_RANK),
+                }.get(cfg.MODEL.TOKEN_TRAJECTORY_VARIANT, '')
+                print('Trajectory variant: {}{}'.format(
+                    cfg.MODEL.TOKEN_TRAJECTORY_VARIANT,
+                    ' | ' + settings if settings else ''))
 
         if pretrain_choice not in ('imagenet', 'self', 'no'):
             # Previously any other value fell through in silence and trained
@@ -542,6 +557,18 @@ class build_transformer(nn.Module):
         if 'state_dict' in param_dict:
             param_dict = param_dict['state_dict']
         own = self.state_dict()
+
+        # Preserve old baseline/dense loading, but never silently evaluate a
+        # new variant checkpoint with another variant or its default settings.
+        signature_key = 'base.token_trajectory.method_signature'
+        signature = param_dict.get(signature_key,
+                                   param_dict.get('module.' + signature_key))
+        expected = own.get(signature_key)
+        if signature is not None or expected is not None:
+            if (signature is None or expected is None or
+                    not torch.equal(signature.cpu(), expected.cpu())):
+                raise ValueError('Trajectory checkpoint/config mismatch: use the '
+                                 'same variant and settings as training')
 
         loaded, skipped, unexpected, mismatched = 0, [], [], []
         for k, v in param_dict.items():

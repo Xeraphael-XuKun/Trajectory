@@ -198,6 +198,10 @@ _C.MODEL.PE_FREEZE_BASE = False
 # static token offset and is mutually exclusive with PE_LAYERWISE.
 _C.MODEL.TOKEN_TRAJECTORY = False
 _C.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX = 1.0
+_C.MODEL.TOKEN_TRAJECTORY_VARIANT = 'dense'
+_C.MODEL.TOKEN_TRAJECTORY_EMA_DECAY = 0.25
+_C.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM = 16
+_C.MODEL.TOKEN_TRAJECTORY_RANK = 16
 
 # ---- VPR: view-aware continuous positional residuals -----------------------
 # A low-rank DCT field is evaluated on the patch grid before every Transformer

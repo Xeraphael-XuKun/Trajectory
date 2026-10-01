@@ -31,6 +31,7 @@ import collections.abc as container_abcs
 
 from .chartpe import ChartRotaryEmbedding, TopologyPreservingChart, build_centered_grid
 from .token_trajectory import DenseCrossLayerTokenTrajectory
+from .token_trajectory_variants import TrajectoryVariant
 from .vpr import ViewAwarePositionalResidual
 
 
@@ -289,6 +290,8 @@ class TransReID(nn.Module):
                  mod_delta_modalities=0,
                  token_trajectory=False,
                  token_trajectory_accel_mix=1.0,
+                 token_trajectory_variant='dense', token_trajectory_ema_decay=0.25,
+                 token_trajectory_hidden_dim=16, token_trajectory_rank=16,
                  vpr=False, vpr_rank=16, vpr_conditional=True,
                  vpr_zero_mean=True,
                  clip_style=False, act_layer=nn.GELU):
@@ -401,8 +404,10 @@ class TransReID(nn.Module):
                 depth=depth, num_tokens=num_patches + 1,
                 embed_dim=embed_dim,
                 acceleration_mix=token_trajectory_accel_mix)
-            if token_trajectory else None
+            if token_trajectory and token_trajectory_variant == 'dense' else None
         )
+        self.token_trajectory_variant = token_trajectory_variant
+        self.token_trajectory_ema_decay = float(token_trajectory_ema_decay)
         # Twin-anchored modality residuals: one bank of layer-wise increments
         # per NON-reference modality.  Same actuator as pos_delta -- zero init,
         # added to the stream before every block -- but selected per image by
@@ -463,6 +468,17 @@ class TransReID(nn.Module):
             grid = torch.cat([torch.zeros(1, 2), grid], dim=0).unsqueeze(0)
             self.register_buffer('chart_grid', grid, persistent=False)
         self.last_chart_stats = None
+        # Build new Linear branches AFTER the backbone initializer, preserving
+        # zero output projections and the historical RNG state for the head.
+        if token_trajectory and token_trajectory_variant != 'dense':
+            with torch.random.fork_rng(devices=[]):
+                self.token_trajectory = TrajectoryVariant(
+                    depth, num_patches + 1, embed_dim,
+                    variant=token_trajectory_variant,
+                    acceleration_mix=token_trajectory_accel_mix,
+                    hidden_dim=token_trajectory_hidden_dim,
+                    rank=token_trajectory_rank,
+                    ema_decay=token_trajectory_ema_decay)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -669,6 +685,13 @@ class TransReID(nn.Module):
             x = blk(x, chart=chart)
             if self.token_trajectory is not None:
                 current_velocity = x - block_input
+                # T3 stores EMA velocities only within this image forward.
+                # Subtract the corrected block input before smoothing.
+                if (self.token_trajectory_variant == 'ema'
+                        and previous_velocity is not None):
+                    rho = self.token_trajectory_ema_decay
+                    current_velocity = (rho * previous_velocity
+                                        + (1.0 - rho) * current_velocity)
                 previous_previous_velocity = previous_velocity
                 previous_velocity = current_velocity
 
