@@ -13,7 +13,7 @@ RUN_DIR=/mnt/cache/wanghanzhi/XK/Trajectory/logs/matrix_minimal_1001/L_S_B_seed1
 COMMON_OPTS=(
   MODEL.PRETRAIN_PATH /mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt
   MODEL.TEXT_CLIP_PATH /mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt
-  DATASETS.ROOT_DIR /mnt/cache/wanghanzhi/Datasets/WHU-MARS
+  DATASETS.ROOT_DIR /mnt/cache/wanghanzhi/Datasets
 )
 
 "$PYTHON_BIN" -u train.py --config_file "$CONFIG" "${COMMON_OPTS[@]}" \
