@@ -160,6 +160,10 @@ class build_transformer(nn.Module):
                     'adaptive_half': 'beta init 0.5; learned range (0, 2)',
                     'token_gate_no_decay': 'hidden {}; conditioner weight decay 0'.format(cfg.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM),
                     'velocity_gate': 'velocity-only direction/input; hidden {}; conditioner weight decay 0'.format(cfg.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM),
+                    'cls_acceleration': 'CLS beta=1; patch beta=0; whole-block velocity',
+                    'patch_acceleration': 'CLS beta=0; patch beta=1; whole-block velocity',
+                    'attention_velocity': 'realized attention residual velocity; beta=0',
+                    'mlp_velocity': 'realized MLP residual velocity; beta=0',
                 }.get(cfg.MODEL.TOKEN_TRAJECTORY_VARIANT, '')
                 print('Trajectory variant: {}{}'.format(
                     cfg.MODEL.TOKEN_TRAJECTORY_VARIANT,

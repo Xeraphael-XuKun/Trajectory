@@ -200,6 +200,7 @@ _C.MODEL.TOKEN_TRAJECTORY = False
 _C.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX = 1.0
 _C.MODEL.TOKEN_TRAJECTORY_VARIANT = 'dense'
 # Round two: dense_half, adaptive_half, token_gate_no_decay, velocity_gate.
+# Round three: cls_acceleration, patch_acceleration, attention_velocity, mlp_velocity.
 _C.MODEL.TOKEN_TRAJECTORY_EMA_DECAY = 0.25
 _C.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM = 16
 _C.MODEL.TOKEN_TRAJECTORY_RANK = 16

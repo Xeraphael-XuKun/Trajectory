@@ -1,10 +1,16 @@
 # Trajectory：Baseline / Trajectory 严格对照
 
+## 第三轮：Token分工与更新来源（2026-10-02）
+
+新增P1（仅CLS加速度）、P2（仅patch加速度）、P3（Attention残差速度）、P4（MLP残差速度）。四组沿用原始dense gain，固定post-BN主结果、pre-BN补充；旧baseline与全部C/T/R组保留。各组配置位于`configs/trajectory_P*.yml`，独立单卡入口位于`server/structure/`。
+
+见 [第三轮方案与验证说明](doc/9.Trajectory第三轮Token分工与更新来源方案_1002.md) 和 [第三轮单卡启动手册](doc/10.Trajectory第三轮单卡启动手册_1002.md)。本地49项测试、完整CLIP构造检查、缩小模型AMP与八个脚本参数检查已通过；尚未进行本轮正式训练。
+
 ## 第二轮：弱加速度与门控调整（2026-10-02）
 
 新增R1固定beta=0.5、R2自适应beta初值0.5、R3原T4门控无权重衰减、R4纯速度门控。旧baseline、T0、C0—T5保留。新组固定post-BN主结果、pre-BN补充，独立入口位于`server/refinements/`。
 
-见 [第二轮四组方案与隔离说明](doc/6.Trajectory第二轮四组方案与隔离说明_1002.md) 和 [第二轮单卡启动手册](doc/7.Trajectory第二轮单卡启动手册_1002.md)。历史T0直接沿用，当前只使用seed1234；未启动本轮服务器训练。
+见 [第二轮四组方案与隔离说明](doc/6.Trajectory第二轮四组方案与隔离说明_1002.md) 和 [第二轮单卡启动手册](doc/7.Trajectory第二轮单卡启动手册_1002.md)。R1—R4的60epoch训练及双读出测试已完成，详见 [第二轮结果分析](doc/8.Trajectory第二轮结果分析_1002.md)：四组尚未超过第一轮C0/T1/T2/T4的总体结果；R2最终beta接近1，R3/R4门控权重不再近零但未提高性能。历史T0继续沿用，当前只分析seed1234。
 
 ## 第一轮：Trajectory 模块扩展（2026-10-02）
 

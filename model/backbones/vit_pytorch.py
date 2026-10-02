@@ -190,11 +190,18 @@ class Block(nn.Module):
         else:
             self.gamma_1 = self.gamma_2 = None
 
-    def forward(self, x, chart=None):
+    def forward(self, x, chart=None, return_updates=False):
         a = self.attn(self.norm1(x), chart=chart)
-        m_in = x + self.drop_path(a if self.gamma_1 is None else self.gamma_1 * a)
+        attn_update = self.drop_path(a if self.gamma_1 is None else self.gamma_1 * a)
+        m_in = x + attn_update
         m = self.mlp(self.norm2(m_in))
-        return m_in + self.drop_path(m if self.gamma_2 is None else self.gamma_2 * m)
+        mlp_update = self.drop_path(m if self.gamma_2 is None else self.gamma_2 * m)
+        output = m_in + mlp_update
+        if return_updates:
+            # Reuse the exact residuals applied above, including LayerScale and
+            # each original DropPath draw. Never recompute either sublayer.
+            return output, attn_update, mlp_update
+        return output
 
 
 class PatchEmbed(nn.Module):
@@ -471,11 +478,15 @@ class TransReID(nn.Module):
         # Build new Linear branches AFTER the backbone initializer, preserving
         # zero output projections and the historical RNG state for the head.
         if token_trajectory and token_trajectory_variant != 'dense':
-            from .token_trajectory_variants import REFINEMENT_VARIANTS
+            from .token_trajectory_variants import REFINEMENT_VARIANTS, STRUCTURE_VARIANTS
             from .token_trajectory_refinements import TrajectoryRefinement
-            trajectory_class = (TrajectoryRefinement
-                                if token_trajectory_variant in REFINEMENT_VARIANTS
-                                else TrajectoryVariant)
+            from .token_trajectory_structure import StructuredTokenTrajectory
+            if token_trajectory_variant in STRUCTURE_VARIANTS:
+                trajectory_class = StructuredTokenTrajectory
+            elif token_trajectory_variant in REFINEMENT_VARIANTS:
+                trajectory_class = TrajectoryRefinement
+            else:
+                trajectory_class = TrajectoryVariant
             with torch.random.fork_rng(devices=[]):
                 self.token_trajectory = trajectory_class(
                     depth, num_patches + 1, embed_dim,
@@ -687,9 +698,18 @@ class TransReID(nn.Module):
                     i, previous_velocity, previous_previous_velocity,
                     gate=trajectory_gate)
             block_input = x
-            x = blk(x, chart=chart)
+            split_velocity = (self.token_trajectory is not None and
+                              self.token_trajectory_variant in ('attention_velocity', 'mlp_velocity'))
+            if split_velocity:
+                x, attn_update, mlp_update = blk(x, chart=chart, return_updates=True)
+            else:
+                x = blk(x, chart=chart)
             if self.token_trajectory is not None:
-                current_velocity = x - block_input
+                if split_velocity:
+                    current_velocity = (attn_update if self.token_trajectory_variant == 'attention_velocity'
+                                        else mlp_update)
+                else:
+                    current_velocity = x - block_input
                 # T3 stores EMA velocities only within this image forward.
                 # Subtract the corrected block input before smoothing.
                 if (self.token_trajectory_variant == 'ema'
