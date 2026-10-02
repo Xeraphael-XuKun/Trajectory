@@ -156,6 +156,10 @@ class build_transformer(nn.Module):
                     'ema': 'ema_decay {}'.format(cfg.MODEL.TOKEN_TRAJECTORY_EMA_DECAY),
                     'token_gate': 'hidden {}'.format(cfg.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM),
                     'channel_mix': 'rank {}'.format(cfg.MODEL.TOKEN_TRAJECTORY_RANK),
+                    'dense_half': 'fixed beta 0.5',
+                    'adaptive_half': 'beta init 0.5; learned range (0, 2)',
+                    'token_gate_no_decay': 'hidden {}; conditioner weight decay 0'.format(cfg.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM),
+                    'velocity_gate': 'velocity-only direction/input; hidden {}; conditioner weight decay 0'.format(cfg.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM),
                 }.get(cfg.MODEL.TOKEN_TRAJECTORY_VARIANT, '')
                 print('Trajectory variant: {}{}'.format(
                     cfg.MODEL.TOKEN_TRAJECTORY_VARIANT,

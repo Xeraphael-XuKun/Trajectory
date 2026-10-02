@@ -1,0 +1,76 @@
+# R2: adaptive_half
+# Fixed llmpar + CLIP norm; post-BN primary, pre-BN supplementary.
+
+MODEL:
+  PRETRAIN_CHOICE: 'imagenet'
+  PRETRAIN_PATH: 'ViT-B-16.pt'
+  TRANSFORMER_TYPE: 'vit_base_clip'
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  STRIDE_SIZE: [16, 16]
+  PE_LAYERWISE: 'none'
+  TOKEN_TRAJECTORY: True
+  TOKEN_TRAJECTORY_ACCEL_MIX: 1.0
+  TOKEN_TRAJECTORY_VARIANT: 'adaptive_half'
+  PE_FREEZE_BASE: False
+
+  TEXT_ALIGN: False
+  TEXT_CLIP_PATH: 'ViT-B-16.pt'
+  TEXT_N_CTX: 4
+  TEXT_MODALITY: 'RGB'
+  TEXT_TEMPLATE: 'a photo of a X view person with X X X X .'
+
+INPUT:
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+
+DATASETS:
+  NAMES: ('WHU-MARS')
+  ROOT_DIR: ('/data')
+  MODALITIES: ['RGB', 'IR', 'Thermal']
+  AERIAL_CAMS: [5, 6]
+
+DATALOADER:
+  SAMPLER: 'PKM'
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+
+SOLVER:
+  OPTIMIZER_NAME: 'Adam'
+  SEED: 1234
+  CUDNN_BENCHMARK: True
+  MAX_EPOCHS: 60
+  BASE_LR: 0.00035
+  PRETRAINED_LR: 0.000005
+  BIAS_LR_FACTOR: 1
+  IMS_PER_BATCH: 64
+  WARMUP_ITERS: 100
+  WARMUP_METHOD: 'linear'
+  LARGE_FC_LR: False
+  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  CHECKPOINT_PERIOD: 60
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 10
+  LOSS_TYPE: 'base'
+  PE_DELTA_LR_MULT: 1.0
+  TEXT_LOSS_WEIGHT: 0.0
+
+TEST:
+  EVAL: True
+  IMS_PER_BATCH: 1024
+  RE_RANKING: False
+  WEIGHT: 'transformer_60.pth'
+  NECK_FEAT: 'after'
+  FEAT_NORM: 'yes'
+
+OUTPUT_DIR: './logs/trajectory_refinements_1002/R2_seed1234'

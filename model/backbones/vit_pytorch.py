@@ -471,8 +471,13 @@ class TransReID(nn.Module):
         # Build new Linear branches AFTER the backbone initializer, preserving
         # zero output projections and the historical RNG state for the head.
         if token_trajectory and token_trajectory_variant != 'dense':
+            from .token_trajectory_variants import REFINEMENT_VARIANTS
+            from .token_trajectory_refinements import TrajectoryRefinement
+            trajectory_class = (TrajectoryRefinement
+                                if token_trajectory_variant in REFINEMENT_VARIANTS
+                                else TrajectoryVariant)
             with torch.random.fork_rng(devices=[]):
-                self.token_trajectory = TrajectoryVariant(
+                self.token_trajectory = trajectory_class(
                     depth, num_patches + 1, embed_dim,
                     variant=token_trajectory_variant,
                     acceleration_mix=token_trajectory_accel_mix,

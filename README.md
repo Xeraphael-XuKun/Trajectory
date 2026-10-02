@@ -1,10 +1,16 @@
 # Trajectory：Baseline / Trajectory 严格对照
 
-## 当前轮：Trajectory 模块扩展（2026-10-02）
+## 第二轮：弱加速度与门控调整（2026-10-02）
+
+新增R1固定beta=0.5、R2自适应beta初值0.5、R3原T4门控无权重衰减、R4纯速度门控。旧baseline、T0、C0—T5保留。新组固定post-BN主结果、pre-BN补充，独立入口位于`server/refinements/`。
+
+见 [第二轮四组方案与隔离说明](doc/6.Trajectory第二轮四组方案与隔离说明_1002.md) 和 [第二轮单卡启动手册](doc/7.Trajectory第二轮单卡启动手册_1002.md)。历史T0直接沿用，当前只使用seed1234；未启动本轮服务器训练。
+
+## 第一轮：Trajectory 模块扩展（2026-10-02）
 
 固定 llmpar + CLIP norm + cuDNN benchmark=True / deterministic=True，保留原 dense/direct 为T0。新增T1自适应加速度、T2双分支、T3历史平滑、T4样本门控、T5通道混合，以及C0速度对照。各版独立配置为`configs/trajectory_*.yml`；SenseCore/AutoDL独立前台入口位于`server/extensions/`，训练后自动补测同一epoch60权重的pre-BN/post-BN。
 
-见 [五版实验方案](doc/2.Trajectory五版扩展实验方案_1002.md) 和 [单卡启动手册](doc/3.Trajectory扩展单卡启动手册_1002.md)。本地数值检查已完成，性能待正式训练验证。
+见 [五版实验方案](doc/2.Trajectory五版扩展实验方案_1002.md) 和 [单卡启动手册](doc/3.Trajectory扩展单卡启动手册_1002.md)。C0及T1—T5的首轮seed1234训练与双读出测试已完成，详见 [首轮结果分析](doc/5.Trajectory扩展首轮结果分析_1002.md)。C0的pre-BN mAP/Rank-1为13.13%/33.74%。T0前6epoch日志与历史记录一致，本阶段按用户决定沿用历史T0、保留原参考实现，不补完整重训或多seed。
 
 ## 历史轮：环境与输入 normalization 对照
 

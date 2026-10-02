@@ -23,6 +23,13 @@ def make_optimizer(cfg, model, center_criterion):
         print('MOD_DELTA_ONLY: frozen {:,} params, trainable {:,} (mod_delta only)'
               .format(frozen, kept))
 
+    # Only the two round-two gating experiments opt in. Gains, backbone, head
+    # and all historical experiments keep their original optimizer settings.
+    trajectory = getattr(getattr(model, 'base', None), 'token_trajectory', None)
+    gate_no_decay = set()
+    if getattr(trajectory, 'gate_no_weight_decay', False):
+        gate_no_decay = {id(p) for p in trajectory.conditioners.parameters()}
+        print('Trajectory gate weight decay: 0 (conditioners only)')
     params = []
     for key, value in model.named_parameters():
         if not value.requires_grad:
@@ -82,6 +89,8 @@ def make_optimizer(cfg, model, center_criterion):
             # BASE_LR * BIAS_LR_FACTOR * CHART_LR_MULT.
             lr = lr * cfg.SOLVER.CHART_LR_MULT
 
+        if id(value) in gate_no_decay:
+            weight_decay = 0.0
         params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
 
     if cfg.SOLVER.OPTIMIZER_NAME == 'SGD':
