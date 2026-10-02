@@ -164,6 +164,10 @@ class build_transformer(nn.Module):
                     'patch_acceleration': 'CLS beta=0; patch beta=1; whole-block velocity',
                     'attention_velocity': 'realized attention residual velocity; beta=0',
                     'mlp_velocity': 'realized MLP residual velocity; beta=0',
+                    'adaptive_token_gate': 'T1 direction + original T4 gate; standard optimizer decay',
+                    'split_token_gate': 'T2 branches + one original T4 gate on their sum; standard optimizer decay',
+                    'velocity_cross_depth': 'C0 before blocks [5, 8, 12]; velocity from immediately preceding block',
+                    'velocity_late_depth': 'C0 before blocks [10, 11, 12]; velocity from immediately preceding block',
                 }.get(cfg.MODEL.TOKEN_TRAJECTORY_VARIANT, '')
                 print('Trajectory variant: {}{}'.format(
                     cfg.MODEL.TOKEN_TRAJECTORY_VARIANT,

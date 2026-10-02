@@ -478,10 +478,16 @@ class TransReID(nn.Module):
         # Build new Linear branches AFTER the backbone initializer, preserving
         # zero output projections and the historical RNG state for the head.
         if token_trajectory and token_trajectory_variant != 'dense':
-            from .token_trajectory_variants import REFINEMENT_VARIANTS, STRUCTURE_VARIANTS
+            from .token_trajectory_variants import (REFINEMENT_VARIANTS, STRUCTURE_VARIANTS,
+                                                    COMBINATION_VARIANTS, SPARSE_VARIANTS)
             from .token_trajectory_refinements import TrajectoryRefinement
             from .token_trajectory_structure import StructuredTokenTrajectory
-            if token_trajectory_variant in STRUCTURE_VARIANTS:
+            from .token_trajectory_combinations import GatedTrajectoryCombination, SparseVelocityTrajectory
+            if token_trajectory_variant in COMBINATION_VARIANTS:
+                trajectory_class = GatedTrajectoryCombination
+            elif token_trajectory_variant in SPARSE_VARIANTS:
+                trajectory_class = SparseVelocityTrajectory
+            elif token_trajectory_variant in STRUCTURE_VARIANTS:
                 trajectory_class = StructuredTokenTrajectory
             elif token_trajectory_variant in REFINEMENT_VARIANTS:
                 trajectory_class = TrajectoryRefinement
@@ -693,7 +699,9 @@ class TransReID(nn.Module):
                 # Patch-only by construction.  The CLS row is never allocated.
                 x = torch.cat([x[:, :1], x[:, 1:] + increment], dim=1)
                 previous_vpr = current_vpr
-            if self.token_trajectory is not None and previous_velocity is not None:
+            if (self.token_trajectory is not None and previous_velocity is not None
+                    and (not hasattr(self.token_trajectory, 'active_layers')
+                         or i in self.token_trajectory.active_layers)):
                 x = x + self.token_trajectory(
                     i, previous_velocity, previous_previous_velocity,
                     gate=trajectory_gate)

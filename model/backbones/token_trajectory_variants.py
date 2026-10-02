@@ -13,18 +13,22 @@ REFINEMENT_VARIANTS = ('dense_half', 'adaptive_half',
                        'token_gate_no_decay', 'velocity_gate')
 STRUCTURE_VARIANTS = ('cls_acceleration', 'patch_acceleration',
                       'attention_velocity', 'mlp_velocity')
+COMBINATION_VARIANTS = ('adaptive_token_gate', 'split_token_gate')
+SPARSE_VARIANTS = ('velocity_cross_depth', 'velocity_late_depth')
 
 
 def validate_trajectory_config(cfg):
     """Reject silently ignored knobs or mixed actuators in this experiment set."""
     variant = cfg.MODEL.TOKEN_TRAJECTORY_VARIANT
-    if variant not in ('dense',) + tuple(VARIANT_CODES) + REFINEMENT_VARIANTS + STRUCTURE_VARIANTS:
+    if variant not in (('dense',) + tuple(VARIANT_CODES) + REFINEMENT_VARIANTS +
+                       STRUCTURE_VARIANTS + COMBINATION_VARIANTS + SPARSE_VARIANTS):
         raise ValueError('Unknown Trajectory variant: {}'.format(variant))
     if variant != 'dense':
         if not cfg.MODEL.TOKEN_TRAJECTORY:
             raise ValueError('A Trajectory variant requires TOKEN_TRAJECTORY=True')
         expected_mix = {'dense_half': 0.5, 'velocity_gate': 0.0,
-                        'attention_velocity': 0.0, 'mlp_velocity': 0.0}.get(variant, 1.0)
+                        'attention_velocity': 0.0, 'mlp_velocity': 0.0,
+                        'velocity_cross_depth': 0.0, 'velocity_late_depth': 0.0}.get(variant, 1.0)
         if cfg.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX != expected_mix:
             raise ValueError('{} requires ACCEL_MIX={}'.format(variant, expected_mix))
         if cfg.MODEL.VPR or cfg.MODEL.MOD_DELTA or cfg.MODEL.TEXT_ALIGN:
@@ -33,7 +37,7 @@ def validate_trajectory_config(cfg):
             ('ema', 'TOKEN_TRAJECTORY_EMA_DECAY', 0.25),
             ('token_gate', 'TOKEN_TRAJECTORY_HIDDEN_DIM', 16),
             ('channel_mix', 'TOKEN_TRAJECTORY_RANK', 16)):
-        owners = (('token_gate', 'token_gate_no_decay', 'velocity_gate')
+        owners = (('token_gate', 'token_gate_no_decay', 'velocity_gate') + COMBINATION_VARIANTS
                   if owner == 'token_gate' else (owner,))
         if variant not in owners and getattr(cfg.MODEL, key) != default:
             raise ValueError('{} only affects variant {}'.format(key, owner))
