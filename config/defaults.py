@@ -574,14 +574,3 @@ _C.TEST.METRIC = 'sysu'
 # ---------------------------------------------------------------------------- #
 # Path to checkpoint and saved log of trained model
 _C.OUTPUT_DIR = ""
-
-# C0-only training supervision. Disabled preserves all historical paths.
-_C.C0_AUX = CN()
-_C.C0_AUX.ENABLED = False
-_C.C0_AUX.VARIANT = 'c1'
-_C.C0_AUX.WEIGHT = 0.10
-_C.C0_AUX.WARMUP_EPOCHS = 5
-_C.C0_AUX.MARGIN = 0.10
-_C.C0_AUX.MAX_GAIN = 0.02
-_C.C0_AUX.KEEP_TOL = 0.01
-_C.C0_AUX.KEEP_WEIGHT = 0.25

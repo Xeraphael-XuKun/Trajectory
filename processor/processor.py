@@ -464,19 +464,8 @@ def do_train(cfg,
 
     group_size = cfg.DATALOADER.NUM_INSTANCE
 
-    c0_enabled = bool(cfg.C0_AUX.ENABLED)
-    if c0_enabled:
-        from loss.c0_supervision import c0_aux_loss
-        from utils.c0_supervision import C0AuxMeter
-        c0_meter = C0AuxMeter(cfg.C0_AUX.VARIANT)
-        logger.info('C0Aux variant=%s weight=%s warmup_epochs=%s; gain-only auxiliary gradients',
-                    cfg.C0_AUX.VARIANT, cfg.C0_AUX.WEIGHT, cfg.C0_AUX.WARMUP_EPOCHS)
-
     for epoch in range(1, epochs + 1):
         start_time = time.time()
-        if c0_enabled:
-            c0_meter.reset()
-            torch.cuda.reset_peak_memory_stats()
         loss_meter.reset()
         acc_meter.reset()
         for m in meter_ls:
@@ -517,13 +506,7 @@ def do_train(cfg,
             target_rep = target.repeat(num_modalities)
 
             with amp.autocast(enabled=True):
-                if c0_enabled and epoch > cfg.C0_AUX.WARMUP_EPOCHS:
-                    # Active-iteration counter continues across epoch boundaries.
-                    probe_step = ((epoch - cfg.C0_AUX.WARMUP_EPOCHS - 1)
-                                  * len(train_loader) + n_iter)
-                    out = model(imgs, target, camids, c0_probe_step=probe_step)
-                else:
-                    out = model(imgs, target, camids)
+                out = model(imgs, target, camids)
                 aux = out[3] if len(out) > 3 else None
                 cls_score, global_feat, feat = out[0], out[1], out[2]
 
@@ -535,11 +518,6 @@ def do_train(cfg,
                 loss, il, tl = loss_fn(cls_score, global_feat, target_rep,
                                        target_ce=target_ce)
                 vpr_aux_total = loss.new_zeros(())
-
-                if aux is not None and aux.get('kind') == 'c0_aux':
-                    c0_loss, c0_stats = c0_aux_loss(aux, target_rep, cfg.C0_AUX)
-                    loss = loss + cfg.C0_AUX.WEIGHT * c0_loss
-                    c0_meter.update(c0_loss, c0_stats)
 
                 if aux is not None and aux.get('kind') == 'vpr':
                     if vpr_text_weight > 0:
@@ -808,9 +786,6 @@ def do_train(cfg,
 
         end_time = time.time()
         time_per_batch = (end_time - start_time) / (n_iter + 1)
-        if c0_enabled:
-            c0_meter.write(cfg.OUTPUT_DIR, logger, epoch, end_time - start_time,
-                           n_iter + 1, torch.cuda.max_memory_allocated())
         if cfg.MODEL.DIST_TRAIN:
             if dist.get_rank() == 0:
                 logger.info(
