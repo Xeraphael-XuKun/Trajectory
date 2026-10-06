@@ -574,3 +574,19 @@ _C.TEST.METRIC = 'sysu'
 # ---------------------------------------------------------------------------- #
 # Path to checkpoint and saved log of trained model
 _C.OUTPUT_DIR = ""
+
+
+# M2 experiments are opt-in and mutually exclusive; none preserves historical paths.
+_C.M2 = CN()
+_C.M2.MODE = "none"
+_C.M2.A_OBJECTIVE = "full"  # none: A0; rank: A1; full: A2/A3
+_C.M2.B_WEIGHTING = "conditional"  # uniform: B0; conditional: B2/B3
+_C.M2.WEIGHT = 0.1
+_C.M2.WARMUP_EPOCHS = 5
+_C.M2.TEMPERATURE = 0.1
+_C.M2.MARGIN = 0.1
+_C.M2.A_HIDDEN = 64
+_C.M2.A_ALPHA = 0.1
+_C.M2.A_KEEP_TOL = 0.01
+_C.M2.B_DELTA = 0.05
+_C.M2.B_WEIGHT_SCALE = 0.1

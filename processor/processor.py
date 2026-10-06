@@ -12,6 +12,7 @@ from loss.text_align import (AERIAL, GROUND, anchor_cos,
 from loss.vpr_losses import (vpr_cross_spectral_displacement_loss,
                              vpr_view_text_loss)
 from torch.cuda import amp
+from loss.m2_losses import m2_a_loss, m2_b_loss
 import torch.distributed as dist
 import torch.nn.functional as F
 
@@ -463,6 +464,7 @@ def do_train(cfg,
         )
 
     group_size = cfg.DATALOADER.NUM_INSTANCE
+    use_m2 = cfg.M2.MODE != 'none'
 
     for epoch in range(1, epochs + 1):
         start_time = time.time()
@@ -486,6 +488,12 @@ def do_train(cfg,
         evaluator.reset()
         scheduler.step(epoch)
         model.train()
+        if use_m2:
+            model_meta.set_m2_epoch(epoch)
+            m2_sums, m2_steps = {}, 0
+            logger.info("M2 epoch=%s mode=%s A_objective=%s B_weighting=%s active=%s weight=%s",
+                        epoch, cfg.M2.MODE, cfg.M2.A_OBJECTIVE, cfg.M2.B_WEIGHTING,
+                        model_meta.m2_aux_enabled, cfg.M2.WEIGHT)
 
         n_iter = 0
         for n_iter, (imgs, vid, camids) in enumerate(train_loader):
@@ -519,6 +527,27 @@ def do_train(cfg,
                                        target_ce=target_ce)
                 vpr_aux_total = loss.new_zeros(())
 
+                if use_m2:
+                    m2_stats = dict(aux.get("stats", {}))
+                    if aux["active"]:
+                        all_cams = torch.cat(camids)
+                        if cfg.M2.MODE == "a":
+                            raw_m2, loss_stats = m2_a_loss(
+                                aux["after"], aux["before"], target_rep, all_cams,
+                                aux["modality"], cfg.M2, cfg.DATASETS.AERIAL_CAMS)
+                        else:
+                            raw_m2, loss_stats = m2_b_loss(
+                                feat, target_rep, all_cams, aux["modality"],
+                                cfg.M2, cfg.DATASETS.AERIAL_CAMS)
+                        loss = loss + cfg.M2.WEIGHT * raw_m2
+                        m2_stats.update(loss_stats)
+                        m2_stats["raw_loss"] = raw_m2.detach()
+                        m2_stats["weighted_loss"] = cfg.M2.WEIGHT * raw_m2.detach()
+                    m2_steps += 1
+                    m2_stats = {key: float(value) for key, value in m2_stats.items()}
+                    for key, value in m2_stats.items():
+                        m2_sums[key] = m2_sums.get(key, 0.0) + value
+
                 if aux is not None and aux.get('kind') == 'vpr':
                     if vpr_text_weight > 0:
                         raw_vpr_text, last_vpr_text_stats = vpr_view_text_loss(aux)
@@ -534,7 +563,7 @@ def do_train(cfg,
                         meter_vpr_csd.update(raw_vpr_csd.item(),
                                              max(1, last_vpr_csd_stats['n_valid']))
 
-                if (aux is not None and aux.get('kind') != 'vpr'
+                if (aux is not None and aux.get('kind') not in ('vpr', 'm2')
                         and text_weight > 0):
                     if aux.get('target') == 'modality':
                         loss_text, text_stats = modality_align(aux)
@@ -653,6 +682,9 @@ def do_train(cfg,
                         lr_str,
                     )
                 )
+                if use_m2:
+                    logger.info("M2 batch=%s running_mean=%s", m2_stats,
+                                {k: round(v / m2_steps, 7) for k, v in m2_sums.items()})
                 metrics = [f'{m.avg:.3f}' for m in meter_ls]
                 metrics_str = ', '.join(metrics)
                 logger.info(f'Epoch[{epoch}] {metrics_str}')
@@ -784,6 +816,9 @@ def do_train(cfg,
                     stats_str = ', '.join(f'{k}={v:.4f}' for k, v in chart_stats.items())
                     logger.info(f'Epoch[{epoch}] Chart: {stats_str}')
 
+        if use_m2:
+            logger.info("M2 epoch=%s steps=%s mean_per_batch=%s", epoch, m2_steps,
+                        {k: v / max(1, m2_steps) for k, v in m2_sums.items()})
         end_time = time.time()
         time_per_batch = (end_time - start_time) / (n_iter + 1)
         if cfg.MODEL.DIST_TRAIN:

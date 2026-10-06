@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from .backbones.vit_pytorch import vit_base_in, vit_base_clip, vit_ics_lup
 from .backbones.token_trajectory_variants import validate_trajectory_config
+from .m2 import M2Readout, frozen_bn_pair, validate_m2_config
 
 def weights_init_kaiming(m):
     classname = m.__class__.__name__
@@ -44,6 +45,7 @@ def weights_init_classifier(m):
 class build_transformer(nn.Module):
     def __init__(self, num_classes, camera_num, view_num, cfg, factory):
         super(build_transformer, self).__init__()
+        validate_m2_config(cfg)
         model_path = cfg.MODEL.PRETRAIN_PATH
         pretrain_choice = cfg.MODEL.PRETRAIN_CHOICE
         self.cos_layer = cfg.MODEL.COS_LAYER
@@ -388,6 +390,14 @@ class build_transformer(nn.Module):
                                   cfg.MODEL.TEXT_MODALITY, self.text_modality_index),
                               aerial, float(self.logit_scale)))
 
+        self.m2_mode = cfg.M2.MODE
+        self.m2_cfg = cfg.M2.clone()
+        self.m2_aux_enabled = False
+        if self.m2_mode == "a":
+            # Existing parameter initialization and subsequent sampler RNG are unchanged.
+            with torch.random.fork_rng(devices=[]):
+                self.m2_reader = M2Readout(self.in_planes, cfg.M2.A_HIDDEN, cfg.M2.A_ALPHA)
+
         if pretrain_choice == 'self':
             # Deliberately last: this checkpoint carries `bottleneck.*` as well
             # as `base.*`, and those two modules do not exist until the lines
@@ -395,6 +405,12 @@ class build_transformer(nn.Module):
             # backbone only and leaves the bottleneck at its fresh init.
             self.load_param(model_path)
         
+    def set_m2_epoch(self, epoch):
+        self.m2_aux_enabled = (
+            epoch > self.m2_cfg.WARMUP_EPOCHS and self.m2_cfg.WEIGHT > 0
+            and (self.m2_mode == "b" or
+                 (self.m2_mode == "a" and self.m2_cfg.A_OBJECTIVE != "none")))
+
     def _text_subset(self, camids, per_modality, device):
         """Which rows of the concatenated batch feed the text loss, which of
         them are aerial, and which modality each belongs to.
@@ -455,13 +471,29 @@ class build_transformer(nn.Module):
                 rng_cpu_before = torch.random.get_rng_state()
                 rng_cuda_before = (torch.cuda.get_rng_state(x.device)
                                    if x.is_cuda else None)
-            global_feat = self.base(x, modal_label=modal, vpr_gate=vpr_gate)
+            if self.m2_mode == "a":
+                raw_cls, patches = self.base(x, modal_label=modal, vpr_gate=vpr_gate,
+                                            return_patches=True)
+                global_feat, readout_stats = self.m2_reader(raw_cls, patches)
+            else:
+                global_feat = self.base(x, modal_label=modal, vpr_gate=vpr_gate)
             if replay_aux:
                 rng_cpu_after = torch.random.get_rng_state()
                 rng_cuda_after = (torch.cuda.get_rng_state(x.device)
                                   if x.is_cuda else None)
             feat = self.bottleneck(global_feat)
             cls_score = self.classifier(feat)
+
+            if self.m2_mode != "none":
+                m2_aux = {"kind": "m2", "active": self.m2_aux_enabled,
+                          "modality": torch.cat([torch.full((im.shape[0],), m,
+                              dtype=torch.long, device=x.device) for m, im in enumerate(imgs)])}
+                if self.m2_mode == "a":
+                    m2_aux["stats"] = readout_stats
+                    if self.m2_aux_enabled:
+                        m2_aux["after"], m2_aux["before"] = frozen_bn_pair(
+                            self.m2_reader, raw_cls, patches, self.bottleneck)
+                return cls_score, global_feat, feat, m2_aux
 
             if replay_aux:
                 rows = torch.arange(x.shape[0], device=x.device)
@@ -543,7 +575,12 @@ class build_transformer(nn.Module):
                 vpr_gate = (torch.isin(cams, self.vpr_aerial_cams.to(x.device))
                             .to(x.dtype) if self.vpr_aerial_only
                             else x.new_ones(cams.shape[0]))
-            global_feat = self.base(x, modal_label=modal, vpr_gate=vpr_gate)
+            if self.m2_mode == "a":
+                raw_cls, patches = self.base(x, modal_label=modal, vpr_gate=vpr_gate,
+                                            return_patches=True)
+                global_feat, readout_stats = self.m2_reader(raw_cls, patches)
+            else:
+                global_feat = self.base(x, modal_label=modal, vpr_gate=vpr_gate)
             feat = self.bottleneck(global_feat)
             if self.neck_feat == 'after':
                 return feat
@@ -569,6 +606,21 @@ class build_transformer(nn.Module):
         if 'state_dict' in param_dict:
             param_dict = param_dict['state_dict']
         own = self.state_dict()
+        # An A checkpoint must neither lose its reader nor silently create one.
+        normalized = {k.replace("module.", ""): v for k, v in param_dict.items()}
+        saved_reader = {k for k in normalized if k.startswith("m2_reader.")}
+        own_reader = {k for k in own if k.startswith("m2_reader.")}
+        if saved_reader != own_reader or any(
+                normalized[k].shape != own[k].shape for k in own_reader):
+            raise ValueError("M2-A checkpoint/config mismatch: reader tensors differ")
+        if self.m2_mode != "none":
+            saved_trajectory = {k for k in normalized if k.startswith("base.token_trajectory.")}
+            own_trajectory = {k for k in own if k.startswith("base.token_trajectory.")}
+            if saved_trajectory != own_trajectory:
+                raise ValueError("M2 checkpoint/config mismatch: baseline versus C0")
+        alpha_key = "m2_reader.alpha_setting"
+        if alpha_key in own and not torch.equal(normalized[alpha_key].cpu(), own[alpha_key].cpu()):
+            raise ValueError("M2-A checkpoint/config mismatch: alpha differs")
 
         # Preserve old baseline/dense loading, but never silently evaluate a
         # new variant checkpoint with another variant or its default settings.

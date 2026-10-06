@@ -621,7 +621,7 @@ class TransReID(nn.Module):
         return torch.cat([cls_pos.to(dtype=dtype), patch_pos], dim=1)
 
     def forward_features(self, x, camera_id, modal_id, view_id, delta_gate=None,
-                         vpr_gate=None, trajectory_gate=None):
+                         vpr_gate=None, trajectory_gate=None, return_patches=False):
         """delta_gate: None, or [B] / [B,1,1] scaling the layer-wise increments
         per image.  None means "apply them everywhere", which is what every run
         before the text-alignment work did and must stay bit-identical."""
@@ -730,13 +730,16 @@ class TransReID(nn.Module):
 
         x = self.norm(x)
 
+        if return_patches:
+            return x[:, 0], x[:, 1:]
         return x[:, 0]
 
     def forward(self, x, cam_label=None, modal_label=None, view_label=None,
-                delta_gate=None, vpr_gate=None, trajectory_gate=None):
+                delta_gate=None, vpr_gate=None, trajectory_gate=None, return_patches=False):
         x = self.forward_features(x, cam_label, modal_label, view_label,
                                   delta_gate=delta_gate, vpr_gate=vpr_gate,
-                                  trajectory_gate=trajectory_gate)
+                                  trajectory_gate=trajectory_gate,
+                                  return_patches=return_patches)
         return x
 
     def _load_rope_freqs(self, freqs):
