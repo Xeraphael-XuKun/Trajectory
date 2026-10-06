@@ -83,6 +83,9 @@ class build_transformer(nn.Module):
         self.use_vpr = bool(cfg.MODEL.VPR)
         self.use_token_trajectory = bool(cfg.MODEL.TOKEN_TRAJECTORY)
         validate_trajectory_config(cfg)
+        from .c0_supervision import validate_c0_aux
+        validate_c0_aux(cfg)
+        self.c0_aux_variant = cfg.C0_AUX.VARIANT if cfg.C0_AUX.ENABLED else None
         self.vpr_view_text = bool(cfg.MODEL.VPR_VIEW_TEXT) and self.use_vpr
         self.vpr_csd = bool(cfg.MODEL.VPR_CSD) and self.use_vpr
         self.vpr_aerial_only = bool(cfg.MODEL.VPR_AERIAL_ONLY)
@@ -428,7 +431,7 @@ class build_transformer(nn.Module):
                     else torch.zeros_like(rows))
         return rows, is_aerial, modality
 
-    def forward(self, x=None, label=None, camids=None, mode=0):
+    def forward(self, x=None, label=None, camids=None, mode=0, c0_probe_step=None):
         if mode==0:
             imgs = list(x)
             per_modality = imgs[0].shape[0]
@@ -455,13 +458,29 @@ class build_transformer(nn.Module):
                 rng_cpu_before = torch.random.get_rng_state()
                 rng_cuda_before = (torch.cuda.get_rng_state(x.device)
                                    if x.is_cuda else None)
-            global_feat = self.base(x, modal_label=modal, vpr_gate=vpr_gate)
+            c0_active = self.c0_aux_variant is not None and c0_probe_step is not None
+            if c0_active:
+                from .c0_supervision import probe_layers
+                global_feat, c0_states = self.base(
+                    x, c0_probe_layers=probe_layers(self.c0_aux_variant, c0_probe_step))
+            else:
+                global_feat = self.base(x, modal_label=modal, vpr_gate=vpr_gate)
             if replay_aux:
                 rng_cpu_after = torch.random.get_rng_state()
                 rng_cuda_after = (torch.cuda.get_rng_state(x.device)
                                   if x.is_cuda else None)
             feat = self.bottleneck(global_feat)
             cls_score = self.classifier(feat)
+
+            if c0_active:
+                from .c0_supervision import build_probes
+                return cls_score, global_feat, feat, {
+                    'kind': 'c0_aux',
+                    'probes': build_probes(self.base, self.bottleneck, c0_states,
+                                           self.c0_aux_variant),
+                    'cams': torch.cat(camids),
+                    'mods': torch.arange(len(imgs), device=x.device).repeat_interleave(per_modality),
+                }
 
             if replay_aux:
                 rows = torch.arange(x.shape[0], device=x.device)
