@@ -43,6 +43,8 @@ def wrapper(base, variant=None, factory=build_transformer):
     model.bottleneck.bias.requires_grad_(False)
     model.use_mod_delta = model.use_vpr = model.text_align = False
     model.c0_aux_variant = variant
+    model.terminal_repair_enabled = False
+    model.terminal_repair_scope = 'joint'
     model.neck_feat = 'after'
     return model
 
@@ -115,18 +117,20 @@ class C0SupervisionTests(unittest.TestCase):
                     expected, actual = model(image, mode=1), restored(image, mode=1)
                 self.assertTrue(torch.equal(expected, actual))
 
-    def test_historical_baseline_and_c0_forward_grad_update_rng_exact(self):
+    def test_historical_baseline_c0_t0_forward_grad_update_rng_exact(self):
         old_vit = historical_module('model/backbones/vit_pytorch.py', 'old_vit', 'model.backbones')
         old_model = historical_module('model/make_model.py', 'old_model', 'model')
         images = [torch.randn(8, 3, 32, 16) for _ in range(3)]
         ids, cams, _ = metadata()
-        for enabled in (False, True):
+        for enabled, acceleration in ((False, 0.0), (True, 0.0), (True, 1.0)):
             torch.manual_seed(19)
             old = wrapper(tiny(old_vit.TransReID, enabled), factory=old_model.build_transformer)
             torch.manual_seed(19)
             new = wrapper(tiny(enabled=enabled))
             self.assertEqual(old.state_dict().keys(), new.state_dict().keys())
             if enabled:
+                old.base.token_trajectory.acceleration_mix = acceleration
+                new.base.token_trajectory.acceleration_mix = acceleration
                 old.base.token_trajectory.gain.data.normal_(std=0.02)
                 new.load_state_dict(old.state_dict())
             opts = cfg.clone()
@@ -281,7 +285,9 @@ class C0SupervisionTests(unittest.TestCase):
             batch_size = 8
 
             def __len__(self):
-                return 2
+                # PKM reports an estimate: actual iterations can be fewer.
+                # Four advertised vs two yielded exposes epoch-phase jumps.
+                return 4
 
             def __iter__(self):
                 for _ in range(2):

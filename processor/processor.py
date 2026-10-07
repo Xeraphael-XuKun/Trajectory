@@ -464,16 +464,29 @@ def do_train(cfg,
 
     group_size = cfg.DATALOADER.NUM_INSTANCE
 
+    repair_enabled = bool(cfg.TERMINAL_REPAIR.ENABLED)
+    if repair_enabled:
+        from loss.terminal_repair import terminal_repair
+        from utils.terminal_repair import TerminalRepairMeter
+        repair_meter = TerminalRepairMeter(cfg.TERMINAL_REPAIR)
+        logger.info('TerminalRepair weighting=%s scope=%s fixed_weight=%s tau=%s first_epoch=%s',
+                    cfg.TERMINAL_REPAIR.WEIGHTING, cfg.TERMINAL_REPAIR.GRADIENT_SCOPE,
+                    cfg.TERMINAL_REPAIR.WEIGHT, cfg.TERMINAL_REPAIR.TEMPERATURE,
+                    cfg.TERMINAL_REPAIR.WARMUP_EPOCHS + 1)
     c0_enabled = bool(cfg.C0_AUX.ENABLED)
     if c0_enabled:
         from loss.c0_supervision import c0_aux_loss
         from utils.c0_supervision import C0AuxMeter
         c0_meter = C0AuxMeter(cfg.C0_AUX.VARIANT)
+        c0_probe_step = 0
         logger.info('C0Aux variant=%s weight=%s warmup_epochs=%s; gain-only auxiliary gradients',
                     cfg.C0_AUX.VARIANT, cfg.C0_AUX.WEIGHT, cfg.C0_AUX.WARMUP_EPOCHS)
 
     for epoch in range(1, epochs + 1):
         start_time = time.time()
+        if repair_enabled:
+            repair_meter.reset()
+            torch.cuda.reset_peak_memory_stats()
         if c0_enabled:
             c0_meter.reset()
             torch.cuda.reset_peak_memory_stats()
@@ -516,12 +529,15 @@ def do_train(cfg,
             num_modalities = len(imgs)
             target_rep = target.repeat(num_modalities)
 
+            repair_loss, repair_stats = None, None
             with amp.autocast(enabled=True):
-                if c0_enabled and epoch > cfg.C0_AUX.WARMUP_EPOCHS:
-                    # Active-iteration counter continues across epoch boundaries.
-                    probe_step = ((epoch - cfg.C0_AUX.WARMUP_EPOCHS - 1)
-                                  * len(train_loader) + n_iter)
-                    out = model(imgs, target, camids, c0_probe_step=probe_step)
+                if repair_enabled and epoch > cfg.TERMINAL_REPAIR.WARMUP_EPOCHS:
+                    out = model(imgs, target, camids, terminal_repair_active=True)
+                elif c0_enabled and epoch > cfg.C0_AUX.WARMUP_EPOCHS:
+                    # PKM's advertised length can exceed its actual batches.
+                    # Advance only for observed active iterations, across epochs.
+                    out = model(imgs, target, camids, c0_probe_step=c0_probe_step)
+                    c0_probe_step += 1
                 else:
                     out = model(imgs, target, camids)
                 aux = out[3] if len(out) > 3 else None
@@ -535,6 +551,14 @@ def do_train(cfg,
                 loss, il, tl = loss_fn(cls_score, global_feat, target_rep,
                                        target_ce=target_ce)
                 vpr_aux_total = loss.new_zeros(())
+
+                if aux is not None and aux.get('kind') == 'terminal_repair':
+                    repair_loss, repair_stats = terminal_repair(
+                        aux['reference'], aux['corrected'], target_rep, aux['cams'], aux['mods'],
+                        weighting=cfg.TERMINAL_REPAIR.WEIGHTING,
+                        temperature=cfg.TERMINAL_REPAIR.TEMPERATURE,
+                        aerial_cams=cfg.DATASETS.AERIAL_CAMS)
+                    loss = loss + cfg.TERMINAL_REPAIR.WEIGHT * repair_loss
 
                 if aux is not None and aux.get('kind') == 'c0_aux':
                     c0_loss, c0_stats = c0_aux_loss(aux, target_rep, cfg.C0_AUX)
@@ -636,9 +660,14 @@ def do_train(cfg,
                 scaler.scale(total_loss).backward()
                 display_loss = total_loss.detach()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if repair_enabled:
+                scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
+            if repair_enabled:
+                repair_meter.update(il, tl, repair_loss, repair_stats, grad_norm,
+                                    scaler.get_scale() < scale_before)
 
             if use_aux_modules:
                 with torch.no_grad():
@@ -808,6 +837,9 @@ def do_train(cfg,
 
         end_time = time.time()
         time_per_batch = (end_time - start_time) / (n_iter + 1)
+        if repair_enabled:
+            repair_meter.write(cfg.OUTPUT_DIR, logger, epoch, end_time - start_time,
+                               torch.cuda.max_memory_allocated())
         if c0_enabled:
             c0_meter.write(cfg.OUTPUT_DIR, logger, epoch, end_time - start_time,
                            n_iter + 1, torch.cuda.max_memory_allocated())

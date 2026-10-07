@@ -86,6 +86,10 @@ class build_transformer(nn.Module):
         from .c0_supervision import validate_c0_aux
         validate_c0_aux(cfg)
         self.c0_aux_variant = cfg.C0_AUX.VARIANT if cfg.C0_AUX.ENABLED else None
+        from .terminal_repair import validate_terminal_repair
+        validate_terminal_repair(cfg)
+        self.terminal_repair_enabled = bool(cfg.TERMINAL_REPAIR.ENABLED)
+        self.terminal_repair_scope = cfg.TERMINAL_REPAIR.GRADIENT_SCOPE
         self.vpr_view_text = bool(cfg.MODEL.VPR_VIEW_TEXT) and self.use_vpr
         self.vpr_csd = bool(cfg.MODEL.VPR_CSD) and self.use_vpr
         self.vpr_aerial_only = bool(cfg.MODEL.VPR_AERIAL_ONLY)
@@ -431,7 +435,8 @@ class build_transformer(nn.Module):
                     else torch.zeros_like(rows))
         return rows, is_aerial, modality
 
-    def forward(self, x=None, label=None, camids=None, mode=0, c0_probe_step=None):
+    def forward(self, x=None, label=None, camids=None, mode=0, c0_probe_step=None,
+                terminal_repair_active=False):
         if mode==0:
             imgs = list(x)
             per_modality = imgs[0].shape[0]
@@ -459,6 +464,11 @@ class build_transformer(nn.Module):
                 rng_cuda_before = (torch.cuda.get_rng_state(x.device)
                                    if x.is_cuda else None)
             c0_active = self.c0_aux_variant is not None and c0_probe_step is not None
+            repair_active = (self.terminal_repair_enabled and self.training
+                             and terminal_repair_active)
+            if repair_active:
+                from .terminal_repair import rng_state, readonly_neck, replay
+                repair_rng = rng_state(x.device)
             if c0_active:
                 from .c0_supervision import probe_layers
                 global_feat, c0_states = self.base(
@@ -471,6 +481,19 @@ class build_transformer(nn.Module):
                                   if x.is_cuda else None)
             feat = self.bottleneck(global_feat)
             cls_score = self.classifier(feat)
+
+            if repair_active:
+                with torch.no_grad():
+                    reference = readonly_neck(
+                        replay(self.base, x, repair_rng, enabled=False), self.bottleneck)
+                corrected = (replay(self.base, x, repair_rng, gain_only=True)
+                             if self.terminal_repair_scope == 'gain_only' else global_feat)
+                return cls_score, global_feat, feat, {
+                    'kind': 'terminal_repair', 'reference': reference,
+                    'corrected': readonly_neck(corrected, self.bottleneck),
+                    'cams': torch.cat(camids),
+                    'mods': torch.arange(len(imgs), device=x.device).repeat_interleave(per_modality),
+                }
 
             if c0_active:
                 from .c0_supervision import build_probes
