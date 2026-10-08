@@ -33,6 +33,7 @@ def make_optimizer(cfg, model, center_criterion):
                 and 'pos_delta' not in key and 'mod_delta' not in key
                 and '.vpr.' not in key
                 and '.token_trajectory.' not in key
+                and '.history_adapter.' not in key
                 and 'rope.alpha' not in key):
             # HiHR section 4.2: 3.5e-4 for randomly initialised modules, 5e-6
             # for pretrained components.  `base` is the pretrained tower;

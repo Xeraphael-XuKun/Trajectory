@@ -1,4 +1,6 @@
 import logging
+import json
+from loss.history_prediction import history_prediction_loss, history_diagnostics
 import os
 import time
 import torch
@@ -462,6 +464,8 @@ def do_train(cfg,
             device=device,
         )
 
+    history_enabled = bool(cfg.HISTORY.ENABLED)
+    history_meter = AverageMeter()
     group_size = cfg.DATALOADER.NUM_INSTANCE
 
     for epoch in range(1, epochs + 1):
@@ -471,6 +475,10 @@ def do_train(cfg,
         for m in meter_ls:
             m.reset()
         meter_text.reset()
+        history_meter.reset()
+        history_sample_count = 0
+        history_sums = {}
+        history_skipped = 0
         meter_vpr_text.reset()
         meter_vpr_csd.reset()
         meter_twin.reset()
@@ -506,7 +514,11 @@ def do_train(cfg,
             target_rep = target.repeat(num_modalities)
 
             with amp.autocast(enabled=True):
-                out = model(imgs, target, camids)
+                history_sample = history_enabled and (n_iter == 0 or (n_iter + 1) % log_period == 0)
+                if history_enabled:
+                    out = model(imgs, target, camids, history_diagnostics=history_sample)
+                else:
+                    out = model(imgs, target, camids)
                 aux = out[3] if len(out) > 3 else None
                 cls_score, global_feat, feat = out[0], out[1], out[2]
 
@@ -517,6 +529,18 @@ def do_train(cfg,
                         ce_split_view, ce_split_mod, ce_groups)
                 loss, il, tl = loss_fn(cls_score, global_feat, target_rep,
                                        target_ce=target_ce)
+                if history_enabled:
+                    prediction_loss = history_prediction_loss(aux)
+                    history_meter.update(prediction_loss.detach().item(), target_rep.shape[0])
+                    if cfg.HISTORY.LOSS_WEIGHT > 0:
+                        loss = loss + cfg.HISTORY.LOSS_WEIGHT * prediction_loss
+                    if history_sample:
+                        diagnostic = history_diagnostics(aux)
+                        history_sample_count += 1
+                        for layer, values in diagnostic.items():
+                            sums = history_sums.setdefault(layer, {})
+                            for key, value in values.items():
+                                sums[key] = sums.get(key, 0.0) + value
                 vpr_aux_total = loss.new_zeros(())
 
                 if aux is not None and aux.get('kind') == 'vpr':
@@ -615,8 +639,11 @@ def do_train(cfg,
                 display_loss = total_loss.detach()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            history_scale_before = scaler.get_scale() if history_enabled else None
             scaler.step(optimizer)
             scaler.update()
+            if history_enabled and scaler.get_scale() < history_scale_before:
+                history_skipped += 1
 
             if use_aux_modules:
                 with torch.no_grad():
@@ -653,6 +680,9 @@ def do_train(cfg,
                         lr_str,
                     )
                 )
+                if history_enabled:
+                    logger.info('Epoch[{}] History: raw_pred={:.6f} weighted_pred={:.6f}'.format(
+                        epoch, history_meter.avg, cfg.HISTORY.LOSS_WEIGHT * history_meter.avg))
                 metrics = [f'{m.avg:.3f}' for m in meter_ls]
                 metrics_str = ', '.join(metrics)
                 logger.info(f'Epoch[{epoch}] {metrics_str}')
@@ -783,6 +813,23 @@ def do_train(cfg,
                 if chart_stats:
                     stats_str = ', '.join(f'{k}={v:.4f}' for k, v in chart_stats.items())
                     logger.info(f'Epoch[{epoch}] Chart: {stats_str}')
+
+        if history_enabled:
+            layer_stats = {l: {k: v / history_sample_count for k, v in values.items()}
+                           for l, values in history_sums.items()}
+            for values in layer_stats.values():
+                if 'copy_mse' in values:
+                    values['prediction_gain_ratio_of_means'] = 1.0 - values['prediction_mse'] / max(values['copy_mse'], 1e-8)
+            record = {'epoch': epoch, 'iterations': n_iter + 1,
+                      'prediction_loss': history_meter.avg,
+                      'weighted_prediction_loss': cfg.HISTORY.LOSS_WEIGHT * history_meter.avg,
+                      'ce': meter_ls[0].avg, 'triplet': meter_ls[1].avg,
+                      'diagnostic_batches': history_sample_count, 'amp_skipped_steps': history_skipped,
+                      'gain_rms': model_meta.base.history_adapter.gain.detach().float().square().mean().sqrt().item(),
+                      'layers': layer_stats}
+            with open(os.path.join(cfg.OUTPUT_DIR, 'history_epoch.jsonl'), 'a', encoding='utf-8') as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + '\n')
+            logger.info('History epoch summary: %s', json.dumps(record, ensure_ascii=False))
 
         end_time = time.time()
         time_per_batch = (end_time - start_time) / (n_iter + 1)

@@ -81,6 +81,21 @@ class build_transformer(nn.Module):
         self.test_mod_delta = cfg.TEST.MOD_DELTA
         self.use_vpr = bool(cfg.MODEL.VPR)
         self.use_token_trajectory = bool(cfg.MODEL.TOKEN_TRAJECTORY)
+        self.use_history = bool(cfg.HISTORY.ENABLED)
+        if self.use_history:
+            if (self.use_token_trajectory or self.use_vpr or self.use_mod_delta
+                    or cfg.MODEL.TEXT_ALIGN or cfg.MODEL.PE_LAYERWISE != 'none'
+                    or cfg.MODEL.PE_TYPE != 'learnable' or cfg.MODEL.PE_FREEZE_BASE
+                    or cfg.MODEL.LAYER_SCALE or cfg.MODEL.PE_KEEP_APE
+                    or cfg.MODEL.SIE_CAMERA or cfg.MODEL.SIE_VIEW
+                    or cfg.MODEL.CE_SPLIT_VIEW or cfg.MODEL.CE_SPLIT_MODALITY
+                    or cfg.SOLVER.LOSS_TYPE != 'base' or cfg.SOLVER.MOD_DELTA_ONLY
+                    or cfg.SOLVER.TWIN_LOSS_WEIGHT != 0 or cfg.SOLVER.TNCE_WEIGHT != 0):
+                raise ValueError('History study requires the plain baseline; disable old enhancements')
+            if cfg.MODEL.TRANSFORMER_TYPE != 'vit_base_clip' or cfg.MODEL.DIST_TRAIN:
+                raise ValueError('History study uses single-GPU CLIP ViT-B/16')
+            if cfg.HISTORY.LOSS_WEIGHT < 0:
+                raise ValueError('HISTORY.LOSS_WEIGHT must be nonnegative')
         self.vpr_view_text = bool(cfg.MODEL.VPR_VIEW_TEXT) and self.use_vpr
         self.vpr_csd = bool(cfg.MODEL.VPR_CSD) and self.use_vpr
         self.vpr_aerial_only = bool(cfg.MODEL.VPR_AERIAL_ONLY)
@@ -162,6 +177,19 @@ class build_transformer(nn.Module):
             print('Loading pretrained model......from {}'.format(model_path))
         elif pretrain_choice == 'no':
             print('PRETRAIN_CHOICE is "no": training from random initialisation')
+
+        # Construct after pretrained loading and outside the baseline RNG stream.
+        if self.use_history:
+            from .backbones.history_adapter import HistoryInnovationAdapter
+            with torch.random.fork_rng(devices=[]):
+                torch.random.default_generator.manual_seed(cfg.HISTORY.INIT_SEED)
+                self.base.history_adapter = HistoryInnovationAdapter(
+                    self.base.embed_dim, len(self.base.blocks),
+                    self.base.patch_embed.num_patches, cfg.HISTORY.RANK,
+                    cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS)
+            print('History innovation: rank={}, alpha={}, prediction layers={}, params={:,}'.format(
+                cfg.HISTORY.RANK, cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS,
+                sum(p.numel() for p in self.base.history_adapter.parameters())))
 
         self.num_classes = num_classes
 
@@ -401,7 +429,7 @@ class build_transformer(nn.Module):
                     else torch.zeros_like(rows))
         return rows, is_aerial, modality
 
-    def forward(self, x=None, label=None, camids=None, mode=0):
+    def forward(self, x=None, label=None, camids=None, mode=0, history_diagnostics=False):
         if mode==0:
             imgs = list(x)
             per_modality = imgs[0].shape[0]
@@ -428,7 +456,12 @@ class build_transformer(nn.Module):
                 rng_cpu_before = torch.random.get_rng_state()
                 rng_cuda_before = (torch.cuda.get_rng_state(x.device)
                                    if x.is_cuda else None)
-            global_feat = self.base(x, modal_label=modal, vpr_gate=vpr_gate)
+            history_aux = None
+            if self.use_history:
+                global_feat, history_aux = self.base(
+                    x, history_collect=True, history_diagnostics=history_diagnostics)
+            else:
+                global_feat = self.base(x, modal_label=modal, vpr_gate=vpr_gate)
             if replay_aux:
                 rng_cpu_after = torch.random.get_rng_state()
                 rng_cuda_after = (torch.cuda.get_rng_state(x.device)
@@ -461,6 +494,8 @@ class build_transformer(nn.Module):
                     'n_modality': len(imgs),
                 }
 
+            if history_aux is not None:
+                return cls_score, global_feat, feat, history_aux
             if not self.text_align or camids is None:
                 return cls_score, global_feat, feat
 
@@ -542,6 +577,18 @@ class build_transformer(nn.Module):
         if 'state_dict' in param_dict:
             param_dict = param_dict['state_dict']
         own = self.state_dict()
+        # A baseline checkpoint must not silently leave the new adapter random.
+        normalized = {k.replace('module.', ''): v for k, v in param_dict.items()}
+        history_keys = [k for k in own if k.startswith('base.history_adapter.')]
+        incoming_history = [k for k in normalized if k.startswith('base.history_adapter.')]
+        if bool(history_keys) != bool(incoming_history):
+            raise ValueError('Checkpoint/config mismatch: history adapter enabled state differs')
+        if history_keys:
+            if any(k not in normalized or normalized[k].shape != own[k].shape for k in history_keys):
+                raise ValueError('Missing or mismatched history adapter checkpoint tensors')
+            key = 'base.history_adapter.specification'
+            if not torch.equal(normalized[key].cpu(), own[key].cpu()):
+                raise ValueError('History checkpoint/config specification mismatch (including alpha)')
 
         loaded, skipped, unexpected, mismatched = 0, [], [], []
         for k, v in param_dict.items():

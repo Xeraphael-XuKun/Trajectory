@@ -76,6 +76,9 @@ if __name__ == '__main__':
     logger.info("Saving model in the path :{}".format(cfg.OUTPUT_DIR))
     logger.info(args)
     logger.info(runtime_summary())
+    if cfg.HISTORY.ENABLED:
+        with open(os.path.join(output_dir, 'resolved_config.yml'), 'w', encoding='utf-8') as handle:
+            handle.write(cfg.dump())
 
     if args.config_file != "":
         logger.info("Loaded configuration file {}".format(args.config_file))

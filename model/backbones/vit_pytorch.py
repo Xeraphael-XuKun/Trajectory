@@ -314,6 +314,7 @@ class TransReID(nn.Module):
         self.num_classes = num_classes
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         self.local_feature = local_feature
+        self.history_adapter = None
         if ics_embedding:
             self.patch_embed = PatchEmbed_ICS(
                 img_size=img_size, patch_size=patch_size, stride_size=stride_size, in_chans=in_chans, embed_dim=embed_dim)
@@ -583,7 +584,7 @@ class TransReID(nn.Module):
         return torch.cat([cls_pos.to(dtype=dtype), patch_pos], dim=1)
 
     def forward_features(self, x, camera_id, modal_id, view_id, delta_gate=None,
-                         vpr_gate=None, trajectory_gate=None):
+                         vpr_gate=None, trajectory_gate=None, history_collect=False, history_diagnostics=False):
         """delta_gate: None, or [B] / [B,1,1] scaling the layer-wise increments
         per image.  None means "apply them everywhere", which is what every run
         before the text-alignment work did and must stay bit-identical."""
@@ -648,6 +649,7 @@ class TransReID(nn.Module):
             mod_idx = (modal_id - 1).clamp_min(0)
             mod_keep = (modal_id > 0).to(x.dtype).reshape(-1, 1, 1)
 
+        history, previous_r, history_records = [], None, {}
         previous_velocity = None
         previous_previous_velocity = None
         for i, blk in enumerate(self.blocks):
@@ -665,6 +667,12 @@ class TransReID(nn.Module):
                 x = x + self.token_trajectory(
                     i, previous_velocity, previous_previous_velocity,
                     gate=trajectory_gate)
+            if self.history_adapter is not None:
+                r, history, previous_r, item = self.history_adapter.correction(
+                    x, i, history, previous_r, history_collect, history_diagnostics)
+                x = x + r
+                if history_collect:
+                    history_records[i + 1] = item
             block_input = x
             x = blk(x, chart=chart)
             if self.token_trajectory is not None:
@@ -674,13 +682,18 @@ class TransReID(nn.Module):
 
         x = self.norm(x)
 
+        if self.history_adapter is not None and history_collect:
+            return x[:, 0], {'kind': 'history', 'layers': history_records,
+                             'prediction_layers': sorted(self.history_adapter.prediction_layers)}
         return x[:, 0]
 
     def forward(self, x, cam_label=None, modal_label=None, view_label=None,
-                delta_gate=None, vpr_gate=None, trajectory_gate=None):
+                delta_gate=None, vpr_gate=None, trajectory_gate=None, history_collect=False, history_diagnostics=False):
         x = self.forward_features(x, cam_label, modal_label, view_label,
                                   delta_gate=delta_gate, vpr_gate=vpr_gate,
-                                  trajectory_gate=trajectory_gate)
+                                  trajectory_gate=trajectory_gate,
+                                  history_collect=history_collect,
+                                  history_diagnostics=history_diagnostics)
         return x
 
     def _load_rope_freqs(self, freqs):

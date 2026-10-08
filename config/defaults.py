@@ -199,6 +199,15 @@ _C.MODEL.PE_FREEZE_BASE = False
 _C.MODEL.TOKEN_TRAJECTORY = False
 _C.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX = 1.0
 
+# Independent historical-innovation study. All old experiments default off.
+_C.HISTORY = CN()
+_C.HISTORY.ENABLED = False
+_C.HISTORY.RANK = 64
+_C.HISTORY.ALPHA = 0.25
+_C.HISTORY.PREDICTION_LAYERS = list(range(2, 13))
+_C.HISTORY.LOSS_WEIGHT = 1.0
+_C.HISTORY.INIT_SEED = 1235
+
 # ---- VPR: view-aware continuous positional residuals -----------------------
 # A low-rank DCT field is evaluated on the patch grid before every Transformer
 # block.  It is sample-conditioned by the evolving CLS token, applied only to
