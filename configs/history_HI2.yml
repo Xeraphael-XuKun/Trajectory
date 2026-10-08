@@ -1,4 +1,4 @@
-# History study HI0; preserves the 1e8440f L_C_B baseline recipe.
+# History study HI2; preserves the 1e8440f L_C_B baseline recipe.
 # post-BN primary; pre-BN supplementary from the same epoch-60 checkpoint.
 
 MODEL:
@@ -79,10 +79,10 @@ HISTORY:
   ENABLED: True
   RANK: 64
   ALPHA: 0.25
-  TOKEN_SCOPE: patch
+  TOKEN_SCOPE: all
   GAIN_MODE: tanh
   PREDICTION_LAYERS: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-  LOSS_WEIGHT: 0.0
+  LOSS_WEIGHT: 1.0
   INIT_SEED: 1235
 
-OUTPUT_DIR: './logs/history_innovation_1009/HI0_seed1234'
+OUTPUT_DIR: './logs/history_innovation_1009/HI2_seed1234'

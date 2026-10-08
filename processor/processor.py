@@ -826,6 +826,8 @@ def do_train(cfg,
                       'ce': meter_ls[0].avg, 'triplet': meter_ls[1].avg,
                       'diagnostic_batches': history_sample_count, 'amp_skipped_steps': history_skipped,
                       'gain_rms': model_meta.base.history_adapter.gain.detach().float().square().mean().sqrt().item(),
+                      'token_scope': cfg.HISTORY.TOKEN_SCOPE, 'gain_mode': cfg.HISTORY.GAIN_MODE,
+                      'gain_distribution': model_meta.base.history_adapter.gain_diagnostics(),
                       'layers': layer_stats}
             with open(os.path.join(cfg.OUTPUT_DIR, 'history_epoch.jsonl'), 'a', encoding='utf-8') as handle:
                 handle.write(json.dumps(record, ensure_ascii=False) + '\n')

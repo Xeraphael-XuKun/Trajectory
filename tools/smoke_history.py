@@ -59,6 +59,8 @@ def main(args):
     assert len(records) == 1 and records[0]['iterations'] == args.steps
     assert args.steps - records[0]['amp_skipped_steps'] >= 2, 'Too few successful optimizer updates'
     assert records[0]['gain_rms'] > 0
+    if c.HISTORY.TOKEN_SCOPE == 'all':
+        assert model.base.history_adapter.cls_gain.detach().abs().sum() > 0
     model.eval(); image = batch[0][0].cuda()
     with torch.no_grad(): before_reload = model(image, mode=1)
     model.load_param(str(output/'transformer_1.pth'))
@@ -67,7 +69,9 @@ def main(args):
     assert all(torch.isfinite(p).all() for p in model.parameters())
     report = {'status': 'SMOKE_ONLY', 'runtime': runtime_summary(),
               'optimizer_attempts': args.steps, 'amp_skipped_steps': records[0]['amp_skipped_steps'],
-              'disk_reload_equal': True, 'gpu_peak_allocated_gib': torch.cuda.max_memory_allocated()/2**30}
+              'disk_reload_equal': True, 'token_scope': c.HISTORY.TOKEN_SCOPE,
+              'gain_mode': c.HISTORY.GAIN_MODE, 'weighted_prediction_loss': records[0]['weighted_prediction_loss'],
+              'gain_distribution': model.base.history_adapter.gain_diagnostics(), 'gpu_peak_allocated_gib': torch.cuda.max_memory_allocated()/2**30}
     (output/'smoke_result.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     print('HISTORY_TRAINER_SMOKE_OK ' + json.dumps(report))
 

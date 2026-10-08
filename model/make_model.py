@@ -186,8 +186,10 @@ class build_transformer(nn.Module):
                 self.base.history_adapter = HistoryInnovationAdapter(
                     self.base.embed_dim, len(self.base.blocks),
                     self.base.patch_embed.num_patches, cfg.HISTORY.RANK,
-                    cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS)
-            print('History innovation: rank={}, alpha={}, prediction layers={}, params={:,}'.format(
+                    cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS,
+                    token_scope=cfg.HISTORY.TOKEN_SCOPE, gain_mode=cfg.HISTORY.GAIN_MODE)
+            print('History innovation: scope={}, gain={}, rank={}, alpha={}, prediction layers={}, params={:,}'.format(
+                cfg.HISTORY.TOKEN_SCOPE, cfg.HISTORY.GAIN_MODE,
                 cfg.HISTORY.RANK, cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS,
                 sum(p.numel() for p in self.base.history_adapter.parameters())))
 
