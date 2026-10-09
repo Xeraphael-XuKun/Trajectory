@@ -11,6 +11,7 @@ from loss.text_align import (AERIAL, GROUND, anchor_cos,
                              text_align_loss, view_logits)
 from loss.vpr_losses import (vpr_cross_spectral_displacement_loss,
                              vpr_view_text_loss)
+from loss.m2_losses import ground_loss, xit_loss
 from torch.cuda import amp
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -518,6 +519,28 @@ def do_train(cfg,
                 loss, il, tl = loss_fn(cls_score, global_feat, target_rep,
                                        target_ce=target_ce)
                 vpr_aux_total = loss.new_zeros(())
+
+                if aux is not None and aux.get('kind') == 'm2_trajectory_text_inversion':
+                    words, _attn = aux['inverter'](aux['summary'])
+                    text_emb, eot = aux['inverter'].splice(words)
+                    # The tower is frozen by construction, but this forward is
+                    # intentionally outside no_grad: gradients flow into words,
+                    # the trajectory summary, C0 gain, and the visual backbone.
+                    text_feat = F.normalize(aux['text'](text_emb, torch.full(
+                        (text_emb.shape[0],), eot, dtype=torch.long,
+                        device=text_emb.device)).float(), dim=-1)
+                    pids_rep = target_rep
+                    raw_ground = ground_loss(text_feat, pids_rep,
+                                             aux['rgb_centers'], aux['ground_temperature'])
+                    row_mod = torch.arange(global_feat.shape[0], device=global_feat.device) // imgs[0].shape[0]
+                    z = F.normalize(global_feat.float() @ aux['proj'].float(), dim=-1)
+                    raw_xit = xit_loss(z, text_feat.detach(), pids_rep, row_mod,
+                                       aux['xit_temperature'])
+                    loss = loss + float(cfg.MODEL.M2_GROUND_WEIGHT) * raw_ground
+                    loss = loss + float(cfg.MODEL.M2_XIT_WEIGHT) * raw_xit
+                    if n_iter % max(1, len(train_loader) // 10) == 0:
+                        print('Epoch[{}] M2-2 ground={:.4f} xit={:.4f}'.format(
+                            epoch, raw_ground.item(), raw_xit.item()))
 
                 if aux is not None and aux.get('kind') == 'vpr':
                     if vpr_text_weight > 0:

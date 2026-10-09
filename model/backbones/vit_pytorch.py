@@ -599,7 +599,8 @@ class TransReID(nn.Module):
         return torch.cat([cls_pos.to(dtype=dtype), patch_pos], dim=1)
 
     def forward_features(self, x, camera_id, modal_id, view_id, delta_gate=None,
-                         vpr_gate=None, trajectory_gate=None):
+                         vpr_gate=None, trajectory_gate=None,
+                         return_trajectory_summary=False):
         """delta_gate: None, or [B] / [B,1,1] scaling the layer-wise increments
         per image.  None means "apply them everywhere", which is what every run
         before the text-alignment work did and must stay bit-identical."""
@@ -666,6 +667,7 @@ class TransReID(nn.Module):
 
         previous_velocity = None
         previous_previous_velocity = None
+        trajectory_summary = []
         for i, blk in enumerate(self.blocks):
             if deltas is not None:
                 x = x + (deltas[i] if delta_gate is None else deltas[i] * delta_gate)
@@ -678,9 +680,20 @@ class TransReID(nn.Module):
                 x = torch.cat([x[:, :1], x[:, 1:] + increment], dim=1)
                 previous_vpr = current_vpr
             if self.token_trajectory is not None and previous_velocity is not None:
-                x = x + self.token_trajectory(
+                # Keep the state and the actual correction attached to the
+                # graph.  The summary is only materialised for M2-2; the
+                # historical path remains tensor-for-tensor unchanged.
+                correction = self.token_trajectory(
                     i, previous_velocity, previous_previous_velocity,
                     gate=trajectory_gate)
+                if return_trajectory_summary:
+                    scale = x.float().pow(2).mean(dim=(1, 2)).sqrt().clamp_min(1e-6)
+                    cls = F.layer_norm(x[:, 0].float(), (x.shape[-1],))
+                    patch = correction[:, 1:].float().mean(dim=1)
+                    trajectory_summary.append(torch.cat(
+                        [cls, correction[:, 0].float() / scale[:, None],
+                         patch / scale[:, None]], dim=-1))
+                x = x + correction
             block_input = x
             x = blk(x, chart=chart)
             if self.token_trajectory is not None:
@@ -697,13 +710,20 @@ class TransReID(nn.Module):
 
         x = self.norm(x)
 
+        if return_trajectory_summary:
+            if len(trajectory_summary) != 11:
+                raise RuntimeError('trajectory summary requires 11 corrections, got {}'.format(
+                    len(trajectory_summary)))
+            return x[:, 0], torch.stack(trajectory_summary, dim=1)
         return x[:, 0]
 
     def forward(self, x, cam_label=None, modal_label=None, view_label=None,
-                delta_gate=None, vpr_gate=None, trajectory_gate=None):
+                delta_gate=None, vpr_gate=None, trajectory_gate=None,
+                return_trajectory_summary=False):
         x = self.forward_features(x, cam_label, modal_label, view_label,
                                   delta_gate=delta_gate, vpr_gate=vpr_gate,
-                                  trajectory_gate=trajectory_gate)
+                                  trajectory_gate=trajectory_gate,
+                                  return_trajectory_summary=return_trajectory_summary)
         return x
 
     def _load_rope_freqs(self, freqs):

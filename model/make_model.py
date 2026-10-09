@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from .backbones.vit_pytorch import vit_base_in, vit_base_clip, vit_ics_lup
 from .backbones.token_trajectory_variants import validate_trajectory_config
+from .m2_trajectory_inverter import TrajectoryInverter
 
 def weights_init_kaiming(m):
     classname = m.__class__.__name__
@@ -204,6 +205,37 @@ class build_transformer(nn.Module):
         self.bottleneck = nn.BatchNorm1d(self.in_planes)
         self.bottleneck.bias.requires_grad_(False)
         self.bottleneck.apply(weights_init_kaiming)
+
+        # M2-2 is an auxiliary training branch.  The deployed forward never
+        # calls it, while the summary path below keeps gradients through H/R.
+        self.m2_variant = str(getattr(cfg.MODEL, 'M2_VARIANT', ''))
+        self.m2_inverter = None
+        self.m2_text = None
+        if self.m2_variant == 'trajectory_text_inversion':
+            if not self.use_token_trajectory:
+                raise ValueError('M2-2 requires MODEL.TOKEN_TRAJECTORY=True')
+            if getattr(self.base, 'clip_proj', None) is None:
+                raise ValueError('M2-2 requires a CLIP visual projection (vit_base_clip)')
+            for p in self.base.clip_proj.parameters() if isinstance(self.base.clip_proj, nn.Module) else [self.base.clip_proj]:
+                p.requires_grad_(False)
+            clip_path = str(getattr(cfg.MODEL, 'M2_TEXT_CLIP_PATH', '') or cfg.MODEL.TEXT_CLIP_PATH)
+            if not clip_path:
+                raise ValueError('M2-2 requires MODEL.M2_TEXT_CLIP_PATH')
+            from .backbones.clip_text import CLIPTextEncoder
+            clip_sd = _read_clip_checkpoint(clip_path)
+            self.m2_text = CLIPTextEncoder()
+            self.m2_text.load_clip(clip_sd)
+            self.m2_inverter = TrajectoryInverter(self.m2_text, width=int(cfg.MODEL.M2_WIDTH))
+            center_path = str(getattr(cfg.MODEL, 'M2_RGB_CENTER_PATH', ''))
+            if center_path:
+                obj = torch.load(center_path, map_location='cpu', weights_only=False)
+                centers = obj['centers'] if isinstance(obj, dict) else obj
+                if centers.ndim != 2 or centers.shape[1] != 512:
+                    raise ValueError('M2 RGB centers must have shape [num_classes,512]')
+                self.register_buffer('m2_rgb_centers', torch.nn.functional.normalize(centers.float(), dim=1))
+            else:
+                self.register_buffer('m2_rgb_centers', torch.empty(0, 512), persistent=False)
+            print('M2-2 trajectory text inversion enabled: width {}, four pseudo-words'.format(cfg.MODEL.M2_WIDTH))
 
         # ---- fixed VPR text direction -------------------------------------
         # These are literal sentences encoded once.  No prompt parameter is
@@ -443,7 +475,12 @@ class build_transformer(nn.Module):
                 rng_cpu_before = torch.random.get_rng_state()
                 rng_cuda_before = (torch.cuda.get_rng_state(x.device)
                                    if x.is_cuda else None)
-            global_feat = self.base(x, modal_label=modal, vpr_gate=vpr_gate)
+            if self.m2_variant == 'trajectory_text_inversion':
+                global_feat, trajectory_summary = self.base(
+                    x, modal_label=modal, vpr_gate=vpr_gate,
+                    return_trajectory_summary=True)
+            else:
+                global_feat = self.base(x, modal_label=modal, vpr_gate=vpr_gate)
             if replay_aux:
                 rng_cpu_after = torch.random.get_rng_state()
                 rng_cuda_after = (torch.cuda.get_rng_state(x.device)
@@ -474,6 +511,18 @@ class build_transformer(nn.Module):
                     'proj': self.base.clip_proj,
                     'per_modality': per_modality,
                     'n_modality': len(imgs),
+                }
+
+            if self.m2_variant == 'trajectory_text_inversion':
+                return cls_score, global_feat, feat, {
+                    'kind': 'm2_trajectory_text_inversion',
+                    'summary': trajectory_summary,
+                    'proj': self.base.clip_proj,
+                    'text': self.m2_text,
+                    'inverter': self.m2_inverter,
+                    'rgb_centers': self.m2_rgb_centers,
+                    'ground_temperature': float(cfg.MODEL.M2_TEMPERATURE),
+                    'xit_temperature': float(cfg.MODEL.M2_TEMPERATURE),
                 }
 
             if not self.text_align or camids is None:

@@ -203,6 +203,15 @@ _C.MODEL.TOKEN_TRAJECTORY_EMA_DECAY = 0.25
 _C.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM = 16
 _C.MODEL.TOKEN_TRAJECTORY_RANK = 16
 
+# AS-ReID module two, variant M2-2 (trajectory text inversion).
+_C.MODEL.M2_VARIANT = ''
+_C.MODEL.M2_TEXT_CLIP_PATH = ''
+_C.MODEL.M2_RGB_CENTER_PATH = ''
+_C.MODEL.M2_GROUND_WEIGHT = 0.5
+_C.MODEL.M2_XIT_WEIGHT = 0.5
+_C.MODEL.M2_TEMPERATURE = 0.07
+_C.MODEL.M2_WIDTH = 128
+
 # ---- VPR: view-aware continuous positional residuals -----------------------
 # A low-rank DCT field is evaluated on the patch grid before every Transformer
 # block.  It is sample-conditioned by the evolving CLS token, applied only to

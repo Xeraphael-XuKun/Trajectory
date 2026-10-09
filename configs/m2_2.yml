@@ -1,0 +1,49 @@
+# M2-2: cross-layer state/correction trajectory text inversion.
+MODEL:
+  PRETRAIN_CHOICE: 'imagenet'
+  PRETRAIN_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
+  TRANSFORMER_TYPE: 'vit_base_clip'
+  TOKEN_TRAJECTORY: True
+  TOKEN_TRAJECTORY_VARIANT: 'dense'
+  TOKEN_TRAJECTORY_ACCEL_MIX: 0.0
+  PE_LAYERWISE: 'none'
+  TEXT_ALIGN: False
+  TEXT_CLIP_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
+  M2_VARIANT: 'trajectory_text_inversion'
+  M2_TEXT_CLIP_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
+  M2_RGB_CENTER_PATH: '/mnt/cache/wanghanzhi/XK/m2-b/artifacts/rgb_centers.pt'
+  M2_GROUND_WEIGHT: 0.5
+  M2_XIT_WEIGHT: 0.5
+  M2_TEMPERATURE: 0.07
+  M2_WIDTH: 128
+INPUT:
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+DATASETS:
+  NAMES: ('WHU-MARS')
+  ROOT_DIR: ('/mnt/cache/wanghanzhi/Datasets/WHU-MARS')
+  MODALITIES: ['RGB', 'IR', 'Thermal']
+  AERIAL_CAMS: [5, 6]
+DATALOADER:
+  SAMPLER: 'PKM'
+  NUM_INSTANCE: 4
+SOLVER:
+  OPTIMIZER_NAME: 'Adam'
+  SEED: 1234
+  CUDNN_BENCHMARK: True
+  MAX_EPOCHS: 60
+  BASE_LR: 0.00035
+  PRETRAINED_LR: 0.000005
+  IMS_PER_BATCH: 64
+  WARMUP_ITERS: 100
+  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  CHECKPOINT_PERIOD: 60
+  LOSS_TYPE: 'base'
+TEST:
+  EVAL: True
+  NECK_FEAT: 'before'
+  FEAT_NORM: 'yes'
+OUTPUT_DIR: '/mnt/cache/wanghanzhi/XK/m2-b/logs/student'
