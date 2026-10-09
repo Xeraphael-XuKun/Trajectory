@@ -83,6 +83,12 @@ def make_optimizer(cfg, model, center_criterion):
             # BASE_LR * BIAS_LR_FACTOR * CHART_LR_MULT.
             lr = lr * cfg.SOLVER.CHART_LR_MULT
 
+        if cfg.HISTORY.ENABLED and cfg.HISTORY.WRITE_WEIGHT_DECAY >= 0:
+            prefix = 'base.history_adapter.'
+            if key.startswith(prefix) and key[len(prefix):].split('.')[0] in (
+                    'gain', 'cls_gain', 'anchors', 'correctors'):
+                weight_decay = cfg.HISTORY.WRITE_WEIGHT_DECAY
+
         params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
 
     if cfg.SOLVER.OPTIMIZER_NAME == 'SGD':

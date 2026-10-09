@@ -209,6 +209,10 @@ _C.HISTORY.GAIN_MODE = 'tanh'    # tanh | linear; both retain ALPHA
 _C.HISTORY.PREDICTION_LAYERS = list(range(2, 13))
 _C.HISTORY.LOSS_WEIGHT = 1.0
 _C.HISTORY.INIT_SEED = 1235
+# -1沿用原优化器衰减；0仅关闭gain/Anchor/Corrector（含bias）的衰减。
+_C.HISTORY.WRITE_WEIGHT_DECAY = -1.0
+_C.HISTORY.STOP_AFTER_EPOCH = 0  # 0跑满MAX_EPOCHS；不改变学习率日程
+_C.HISTORY.GRAD_DIAG_PERIOD = 0  # 0关闭新增诊断；正数=每epoch首步及每N步
 
 # ---- VPR: view-aware continuous positional residuals -----------------------
 # A low-rank DCT field is evaluated on the patch grid before every Transformer

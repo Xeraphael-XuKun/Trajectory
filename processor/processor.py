@@ -1,6 +1,7 @@
 import logging
 import json
 from loss.history_prediction import history_prediction_loss, history_diagnostics
+from utils.history_optimization import HistoryOptimizationMonitor, diagnostic_stop_epoch, number
 import os
 import time
 import torch
@@ -466,6 +467,16 @@ def do_train(cfg,
 
     history_enabled = bool(cfg.HISTORY.ENABLED)
     history_meter = AverageMeter()
+    history_stop = diagnostic_stop_epoch(cfg)
+    history_grad_period = cfg.HISTORY.GRAD_DIAG_PERIOD if history_enabled else 0
+    history_monitor = (HistoryOptimizationMonitor(model_meta.base.history_adapter, optimizer)
+                       if history_grad_period > 0 else None)
+    if history_monitor is not None:
+        initial = {'schedule_epochs': epochs, 'stop_after_epoch': history_stop,
+                   'alpha': cfg.HISTORY.ALPHA, 'parameters': history_monitor.parameter_summary()}
+        with open(os.path.join(cfg.OUTPUT_DIR, 'history_optimizer_initial.json'), 'w', encoding='utf-8') as handle:
+            json.dump(initial, handle, ensure_ascii=False, indent=2, allow_nan=False)
+        logger.info('History optimization diagnostic: %s', json.dumps(initial, ensure_ascii=False))
     group_size = cfg.DATALOADER.NUM_INSTANCE
 
     for epoch in range(1, epochs + 1):
@@ -513,6 +524,8 @@ def do_train(cfg,
             num_modalities = len(imgs)
             target_rep = target.repeat(num_modalities)
 
+            history_gradient_sample = (history_monitor is not None and
+                                       (n_iter == 0 or (n_iter + 1) % history_grad_period == 0))
             with amp.autocast(enabled=True):
                 history_sample = history_enabled and (n_iter == 0 or (n_iter + 1) % log_period == 0)
                 if history_enabled:
@@ -529,6 +542,8 @@ def do_train(cfg,
                         ce_split_view, ce_split_mod, ce_groups)
                 loss, il, tl = loss_fn(cls_score, global_feat, target_rep,
                                        target_ce=target_ce)
+                if history_gradient_sample:
+                    history_identity_loss = loss
                 if history_enabled:
                     prediction_loss = history_prediction_loss(aux)
                     history_meter.update(prediction_loss.detach().item(), target_rep.shape[0])
@@ -616,6 +631,14 @@ def do_train(cfg,
                     if 'gpd' in loss_type:
                         loss += loss_gpd
 
+            history_gradient_record = None
+            if history_gradient_sample:
+                history_gradient_record = history_monitor.loss_gradients(
+                    history_identity_loss, prediction_loss, cfg.HISTORY.LOSS_WEIGHT, scaler.get_scale())
+                history_gradient_record.update(epoch=epoch, iteration=n_iter + 1,
+                                               alpha=cfg.HISTORY.ALPHA,
+                                               parameters=history_monitor.parameter_summary())
+
             if ((vpr_text_weight > 0 or vpr_csd_weight > 0)
                     and vpr_aux_only):
                 # Main CE/Triplet follows the ordinary full-model path.  The
@@ -638,12 +661,21 @@ def do_train(cfg,
                 scaler.scale(total_loss).backward()
                 display_loss = total_loss.detach()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if history_gradient_record is not None:
+                history_gradient_record['data_grad_preclip_norm'] = history_monitor.before_clip()
+            total_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if history_gradient_record is not None:
+                history_gradient_record['global_grad_preclip_norm'] = number(total_grad_norm)
+                history_gradient_record.update(history_monitor.after_clip())
             history_scale_before = scaler.get_scale() if history_enabled else None
             scaler.step(optimizer)
             scaler.update()
             if history_enabled and scaler.get_scale() < history_scale_before:
                 history_skipped += 1
+            if history_gradient_record is not None:
+                history_gradient_record['amp_skipped'] = scaler.get_scale() < history_scale_before
+                with open(os.path.join(cfg.OUTPUT_DIR, 'history_gradients.jsonl'), 'a', encoding='utf-8') as handle:
+                    handle.write(json.dumps(history_gradient_record, ensure_ascii=False, allow_nan=False) + '\n')
 
             if use_aux_modules:
                 with torch.no_grad():
@@ -829,6 +861,9 @@ def do_train(cfg,
                       'token_scope': cfg.HISTORY.TOKEN_SCOPE, 'gain_mode': cfg.HISTORY.GAIN_MODE,
                       'gain_distribution': model_meta.base.history_adapter.gain_diagnostics(),
                       'layers': layer_stats}
+            if history_monitor is not None:
+                record['optimization'] = {'alpha': cfg.HISTORY.ALPHA,
+                                          'parameters': history_monitor.parameter_summary()}
             with open(os.path.join(cfg.OUTPUT_DIR, 'history_epoch.jsonl'), 'a', encoding='utf-8') as handle:
                 handle.write(json.dumps(record, ensure_ascii=False) + '\n')
             logger.info('History epoch summary: %s', json.dumps(record, ensure_ascii=False))
@@ -849,12 +884,22 @@ def do_train(cfg,
                 )
             )
 
-        if epoch % checkpoint_period == 0:
+        if epoch % checkpoint_period == 0 or epoch == history_stop:
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
                     torch.save(model.state_dict(), os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
             else:
                 torch.save(model.state_dict(), os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
+
+        if epoch == history_stop:
+            stop_record = {'completed_epoch': epoch, 'schedule_epochs': epochs,
+                           'checkpoint': cfg.MODEL.NAME + '_{}.pth'.format(epoch),
+                           'reason': 'history diagnostic stop; not a completed 60-epoch experiment',
+                           'resume_state_saved': False}
+            with open(os.path.join(cfg.OUTPUT_DIR, 'history_stop.json'), 'w', encoding='utf-8') as handle:
+                json.dump(stop_record, handle, ensure_ascii=False, indent=2)
+            logger.info('History diagnostic stopped after epoch %d; scheduler horizon remains %d', epoch, epochs)
+            break
 
         if epoch % eval_period == 0:
             model.eval()
