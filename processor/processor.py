@@ -364,6 +364,17 @@ def do_train(cfg,
 
     logger = logging.getLogger('transreid.train')
     logger.info('start training')
+    relation_bank = None
+    if cfg.M2.ENABLED:
+        from loss.clip_relation import identity_modality_centers, relation_kl
+        if cfg.M2.VARIANT != 'clip_relation_distill' or cfg.M2.RELATION_READOUT != 'after':
+            raise ValueError('M2-4 requires clip_relation_distill and post-BN readout')
+        if not cfg.M2.RELATION_REMOVE_SAME_ID or not cfg.M2.RELATION_ALL_MODAL_PAIRS:
+            raise ValueError('M2-4 first configuration requires diagonal removal and all nine pairs')
+        from tools.m2_cache import validate_artifact
+        artifact = torch.load(cfg.M2.RELATION_BANK, map_location='cpu', weights_only=False)
+        validate_artifact(artifact, cfg)
+        relation_bank = artifact['relation'].to(device).detach()
     if device:
         model.to(local_rank)
         if torch.cuda.device_count() > 1 and cfg.MODEL.DIST_TRAIN:
@@ -517,6 +528,17 @@ def do_train(cfg,
                         ce_split_view, ce_split_mod, ce_groups)
                 loss, il, tl = loss_fn(cls_score, global_feat, target_rep,
                                        target_ce=target_ce)
+                if relation_bank is not None:
+                    with amp.autocast(enabled=False):
+                        mods = torch.arange(num_modalities, device=feat.device).repeat_interleave(len(target))
+                        centers, ids, valid = identity_modality_centers(feat, target_rep, mods)
+                        rel_loss, rel_stats = relation_kl(
+                            centers, relation_bank[ids][:, ids],
+                            cfg.M2.STUDENT_TEMPERATURE, cfg.M2.TEACHER_TEMPERATURE,
+                            valid=valid, return_stats=True)
+                        loss = loss + cfg.M2.RELATION_WEIGHT * rel_loss
+                    if n_iter % log_period == 0:
+                        logger.info('M2-4 relation_loss=%s stats=%s', rel_loss.item(), rel_stats)
                 vpr_aux_total = loss.new_zeros(())
 
                 if aux is not None and aux.get('kind') == 'vpr':

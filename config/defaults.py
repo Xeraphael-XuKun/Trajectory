@@ -571,3 +571,15 @@ _C.TEST.METRIC = 'sysu'
 # ---------------------------------------------------------------------------- #
 # Path to checkpoint and saved log of trained model
 _C.OUTPUT_DIR = ""
+
+_C.M2 = CN()
+_C.M2.ENABLED = False
+_C.M2.VARIANT = 'none'
+_C.M2.RELATION_BANK = ''
+_C.M2.RGB_CENTERS = ''
+_C.M2.TEACHER_TEMPERATURE = 0.07
+_C.M2.STUDENT_TEMPERATURE = 0.07
+_C.M2.RELATION_WEIGHT = 0.2
+_C.M2.RELATION_READOUT = 'after'
+_C.M2.RELATION_REMOVE_SAME_ID = True
+_C.M2.RELATION_ALL_MODAL_PAIRS = True
