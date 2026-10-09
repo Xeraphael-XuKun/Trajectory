@@ -9,13 +9,6 @@ MODEL:
   PE_LAYERWISE: 'none'
   TEXT_ALIGN: False
   TEXT_CLIP_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
-  M2_VARIANT: 'trajectory_text_inversion'
-  M2_TEXT_CLIP_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
-  M2_RGB_CENTER_PATH: '/mnt/cache/wanghanzhi/XK/m2-b/artifacts/rgb_centers.pt'
-  M2_GROUND_WEIGHT: 0.5
-  M2_XIT_WEIGHT: 0.5
-  M2_TEMPERATURE: 0.07
-  M2_WIDTH: 128
 INPUT:
   SIZE_TRAIN: [256, 128]
   SIZE_TEST: [256, 128]
@@ -44,6 +37,21 @@ SOLVER:
   LOSS_TYPE: 'base'
 TEST:
   EVAL: True
-  NECK_FEAT: 'before'
+  NECK_FEAT: 'after'
   FEAT_NORM: 'yes'
 OUTPUT_DIR: '/mnt/cache/wanghanzhi/XK/m2-b/logs/student'
+
+
+M2:
+  ENABLED: True
+  VARIANT: 'trajectory_text_inversion'
+  CLIP_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
+  RGB_CENTERS: '/mnt/cache/wanghanzhi/XK/m2-b/artifacts/rgb_centers.pt'
+  SUMMARY_WIDTH: 128
+  PSEUDO_TOKENS: 4
+  GROUND_WEIGHT: 0.5
+  CROSS_IT_WEIGHT: 0.5
+  GROUND_TEMPERATURE: 0.07
+  CROSS_TEMPERATURE: 0.07
+  FREEZE_VISUAL_PROJECTION: True
+

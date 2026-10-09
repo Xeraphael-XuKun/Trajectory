@@ -203,14 +203,21 @@ _C.MODEL.TOKEN_TRAJECTORY_EMA_DECAY = 0.25
 _C.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM = 16
 _C.MODEL.TOKEN_TRAJECTORY_RANK = 16
 
-# AS-ReID module two, variant M2-2 (trajectory text inversion).
-_C.MODEL.M2_VARIANT = ''
-_C.MODEL.M2_TEXT_CLIP_PATH = ''
-_C.MODEL.M2_RGB_CENTER_PATH = ''
-_C.MODEL.M2_GROUND_WEIGHT = 0.5
-_C.MODEL.M2_XIT_WEIGHT = 0.5
-_C.MODEL.M2_TEMPERATURE = 0.07
-_C.MODEL.M2_WIDTH = 128
+# AS-ReID module two, shared namespace (each worktree enables one variant).
+_C.M2 = CN()
+_C.M2.ENABLED = False
+_C.M2.VARIANT = 'none'
+_C.M2.CLIP_PATH = ''
+_C.M2.RGB_CENTERS = ''
+_C.M2.SUMMARY_WIDTH = 128
+_C.M2.PSEUDO_TOKENS = 4
+_C.M2.GROUND_WEIGHT = 0.5
+_C.M2.CROSS_IT_WEIGHT = 0.5
+_C.M2.GROUND_TEMPERATURE = 0.07
+_C.M2.CROSS_TEMPERATURE = 0.07
+_C.M2.TEXT_TARGET_STOP_GRAD = True
+_C.M2.SUMMARY_STOP_GRAD = False
+_C.M2.FREEZE_VISUAL_PROJECTION = True
 
 # ---- VPR: view-aware continuous positional residuals -----------------------
 # A low-rank DCT field is evaluated on the patch grid before every Transformer
@@ -580,3 +587,4 @@ _C.TEST.METRIC = 'sysu'
 # ---------------------------------------------------------------------------- #
 # Path to checkpoint and saved log of trained model
 _C.OUTPUT_DIR = ""
+

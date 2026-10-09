@@ -208,7 +208,9 @@ class build_transformer(nn.Module):
 
         # M2-2 is an auxiliary training branch.  The deployed forward never
         # calls it, while the summary path below keeps gradients through H/R.
-        self.m2_variant = str(getattr(cfg.MODEL, 'M2_VARIANT', ''))
+        m2_cfg = getattr(cfg, 'M2', None)
+        self.m2_variant = (str(getattr(m2_cfg, 'VARIANT', 'none'))
+                           if m2_cfg is not None and bool(m2_cfg.ENABLED) else 'none')
         self.m2_inverter = None
         self.m2_text = None
         if self.m2_variant == 'trajectory_text_inversion':
@@ -218,24 +220,31 @@ class build_transformer(nn.Module):
                 raise ValueError('M2-2 requires a CLIP visual projection (vit_base_clip)')
             for p in self.base.clip_proj.parameters() if isinstance(self.base.clip_proj, nn.Module) else [self.base.clip_proj]:
                 p.requires_grad_(False)
-            clip_path = str(getattr(cfg.MODEL, 'M2_TEXT_CLIP_PATH', '') or cfg.MODEL.TEXT_CLIP_PATH)
+            clip_path = str(getattr(m2_cfg, 'CLIP_PATH', '') or cfg.MODEL.TEXT_CLIP_PATH)
             if not clip_path:
-                raise ValueError('M2-2 requires MODEL.M2_TEXT_CLIP_PATH')
+                raise ValueError('M2-2 requires M2.CLIP_PATH')
             from .backbones.clip_text import CLIPTextEncoder
             clip_sd = _read_clip_checkpoint(clip_path)
             self.m2_text = CLIPTextEncoder()
             self.m2_text.load_clip(clip_sd)
-            self.m2_inverter = TrajectoryInverter(self.m2_text, width=int(cfg.MODEL.M2_WIDTH))
-            center_path = str(getattr(cfg.MODEL, 'M2_RGB_CENTER_PATH', ''))
+            self.m2_inverter = TrajectoryInverter(self.m2_text, width=int(m2_cfg.SUMMARY_WIDTH), n_words=int(m2_cfg.PSEUDO_TOKENS))
+            center_path = str(getattr(m2_cfg, 'RGB_CENTERS', ''))
+            if not center_path:
+                raise ValueError('M2-2 requires M2.RGB_CENTERS')
             if center_path:
                 obj = torch.load(center_path, map_location='cpu', weights_only=False)
                 centers = obj['centers'] if isinstance(obj, dict) else obj
                 if centers.ndim != 2 or centers.shape[1] != 512:
                     raise ValueError('M2 RGB centers must have shape [num_classes,512]')
+                if isinstance(obj, dict) and 'pids' in obj:
+                    pids = torch.as_tensor(obj['pids']).long().sort().values
+                    expected = torch.arange(centers.shape[0], dtype=torch.long)
+                    if not torch.equal(pids.cpu(), expected):
+                        raise ValueError('M2 RGB centers pids must be contiguous 0..N-1')
                 self.register_buffer('m2_rgb_centers', torch.nn.functional.normalize(centers.float(), dim=1))
             else:
                 self.register_buffer('m2_rgb_centers', torch.empty(0, 512), persistent=False)
-            print('M2-2 trajectory text inversion enabled: width {}, four pseudo-words'.format(cfg.MODEL.M2_WIDTH))
+            print('M2-2 trajectory text inversion enabled: width {}, four pseudo-words'.format(m2_cfg.SUMMARY_WIDTH))
 
         # ---- fixed VPR text direction -------------------------------------
         # These are literal sentences encoded once.  No prompt parameter is
@@ -666,3 +675,7 @@ def make_model(cfg, num_class, camera_num, view_num):
     model = build_transformer(num_class, camera_num, view_num, cfg, __factory_T_type)
     print('===========building transformer===========')
     return model
+
+
+
+

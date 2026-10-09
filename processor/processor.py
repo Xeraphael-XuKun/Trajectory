@@ -536,8 +536,8 @@ def do_train(cfg,
                     z = F.normalize(global_feat.float() @ aux['proj'].float(), dim=-1)
                     raw_xit = xit_loss(z, text_feat.detach(), pids_rep, row_mod,
                                        aux['xit_temperature'])
-                    loss = loss + float(cfg.MODEL.M2_GROUND_WEIGHT) * raw_ground
-                    loss = loss + float(cfg.MODEL.M2_XIT_WEIGHT) * raw_xit
+                    loss = loss + float(cfg.M2.GROUND_WEIGHT) * raw_ground
+                    loss = loss + float(cfg.M2.CROSS_IT_WEIGHT) * raw_xit
                     if n_iter % max(1, len(train_loader) // 10) == 0:
                         print('Epoch[{}] M2-2 ground={:.4f} xit={:.4f}'.format(
                             epoch, raw_ground.item(), raw_xit.item()))
@@ -912,3 +912,4 @@ def do_inference(cfg,
     for r in [1, 5, 10]:
         logger.info('CMC curve, Rank-{:<3}:{:.2%}'.format(r, cmc[r - 1]))
     return cmc[0], cmc[4]
+
