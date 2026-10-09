@@ -46,6 +46,10 @@ def make_optimizer(cfg, model, center_criterion):
             # model does not want rotation" when the truth is that alpha never
             # got the chance to move.
             lr = cfg.SOLVER.PRETRAINED_LR
+        if 'deep_c0_controller' in key:
+            # M2-3 context/projections are new parameters despite living under
+            # the pretrained visual tower; keep the prescribed 3.5e-4 clock.
+            lr = cfg.SOLVER.BASE_LR
         if "bias" in key:
             # Multiplies whatever lr the branch above chose.  Identical to the
             # old `BASE_LR * factor` whenever PRETRAINED_LR is off.
