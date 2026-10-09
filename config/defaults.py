@@ -202,6 +202,10 @@ _C.MODEL.TOKEN_TRAJECTORY_VARIANT = 'dense'
 _C.MODEL.TOKEN_TRAJECTORY_EMA_DECAY = 0.25
 _C.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM = 16
 _C.MODEL.TOKEN_TRAJECTORY_RANK = 16
+_C.MODEL.M2_DEEP_C0 = False
+_C.MODEL.M2_DEEP_CONTEXT_LENGTH = 4
+_C.MODEL.M2_CONTROL_WIDTH = 64
+_C.MODEL.M2_CONTROL_RHO = 0.25
 
 # ---- VPR: view-aware continuous positional residuals -----------------------
 # A low-rank DCT field is evaluated on the patch grid before every Transformer

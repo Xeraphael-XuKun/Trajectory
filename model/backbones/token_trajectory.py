@@ -73,3 +73,19 @@ class DenseCrossLayerTokenTrajectory(nn.Module):
             ).reshape(-1, 1, 1)
             correction = correction * gate
         return correction
+
+class DeepTextC0Controller(nn.Module):
+    """Shared deep-context modulation for the M2-3 C0 extension."""
+    def __init__(self, depth, num_tokens, embed_dim=768, context_dim=512,
+                 n_ctx=4, width=64, rho=0.25):
+        super().__init__(); self.depth=int(depth); self.num_tokens=int(num_tokens); self.rho=float(rho)
+        self.context=nn.Parameter(torch.empty(depth-1,n_ctx,context_dim)); nn.init.normal_(self.context,std=.02)
+        self.q=nn.Linear(embed_dim,width,bias=False); self.k=nn.Linear(context_dim,width,bias=False)
+        self.v=nn.Linear(context_dim,width,bias=False); self.o=nn.Linear(width,embed_dim,bias=False)
+        nn.init.zeros_(self.o.weight)
+    def forward(self, layer, velocity, correction):
+        if not 1 <= int(layer) < self.depth: raise IndexError('controller layer outside [1, depth)')
+        u=F.layer_norm(velocity.float(),(velocity.shape[-1],)); c=F.layer_norm(self.context[int(layer)-1].float(),(self.context.shape[-1],))
+        a=torch.softmax(self.q(u) @ self.k(c).transpose(-1,-2)/(self.q.out_features**.5),dim=-1)
+        mult=1+self.rho*torch.tanh(self.o(a @ self.v(c)))
+        return correction*mult.to(correction.dtype)

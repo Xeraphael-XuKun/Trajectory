@@ -30,7 +30,7 @@ import torch.nn.functional as F
 import collections.abc as container_abcs
 
 from .chartpe import ChartRotaryEmbedding, TopologyPreservingChart, build_centered_grid
-from .token_trajectory import DenseCrossLayerTokenTrajectory
+from .token_trajectory import DenseCrossLayerTokenTrajectory, DeepTextC0Controller
 from .token_trajectory_variants import TrajectoryVariant
 from .vpr import ViewAwarePositionalResidual
 
@@ -292,6 +292,8 @@ class TransReID(nn.Module):
                  token_trajectory_accel_mix=1.0,
                  token_trajectory_variant='dense', token_trajectory_ema_decay=0.25,
                  token_trajectory_hidden_dim=16, token_trajectory_rank=16,
+                 deep_c0_control=False, deep_c0_context_length=4,
+                 deep_c0_control_width=64, deep_c0_control_rho=0.25,
                  vpr=False, vpr_rank=16, vpr_conditional=True,
                  vpr_zero_mean=True,
                  clip_style=False, act_layer=nn.GELU):
@@ -408,6 +410,7 @@ class TransReID(nn.Module):
         )
         self.token_trajectory_variant = token_trajectory_variant
         self.token_trajectory_ema_decay = float(token_trajectory_ema_decay)
+        self.deep_c0_controller = None
         # Twin-anchored modality residuals: one bank of layer-wise increments
         # per NON-reference modality.  Same actuator as pos_delta -- zero init,
         # added to the stream before every block -- but selected per image by
@@ -479,6 +482,13 @@ class TransReID(nn.Module):
                     hidden_dim=token_trajectory_hidden_dim,
                     rank=token_trajectory_rank,
                     ema_decay=token_trajectory_ema_decay)
+        if deep_c0_control:
+            if self.token_trajectory is None:
+                raise ValueError('deep C0 control requires dense TOKEN_TRAJECTORY')
+            self.deep_c0_controller = DeepTextC0Controller(
+                depth, num_patches + 1, embed_dim=embed_dim,
+                n_ctx=deep_c0_context_length, width=deep_c0_control_width,
+                rho=deep_c0_control_rho)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -678,9 +688,12 @@ class TransReID(nn.Module):
                 x = torch.cat([x[:, :1], x[:, 1:] + increment], dim=1)
                 previous_vpr = current_vpr
             if self.token_trajectory is not None and previous_velocity is not None:
-                x = x + self.token_trajectory(
+                correction = self.token_trajectory(
                     i, previous_velocity, previous_previous_velocity,
                     gate=trajectory_gate)
+                if self.deep_c0_controller is not None:
+                    correction = self.deep_c0_controller(i, previous_velocity, correction)
+                x = x + correction
             block_input = x
             x = blk(x, chart=chart)
             if self.token_trajectory is not None:
