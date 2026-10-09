@@ -3,7 +3,7 @@
 
 MODEL:
   PRETRAIN_CHOICE: 'imagenet'
-  PRETRAIN_PATH: 'ViT-B-16.pt'
+  PRETRAIN_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
   TRANSFORMER_TYPE: 'vit_base_clip'
   METRIC_LOSS_TYPE: 'triplet'
   IF_LABELSMOOTH: 'off'
@@ -17,19 +17,30 @@ MODEL:
   TOKEN_TRAJECTORY_ACCEL_MIX: 0.0
   TOKEN_TRAJECTORY_VARIANT: 'dense'
   PE_FREEZE_BASE: False
-  M2_DEEP_C0: True
-  M2_DEEP_CONTEXT_LENGTH: 4
-  M2_CONTROL_WIDTH: 64
-  M2_CONTROL_RHO: 0.25
-  M2_DEEP_TEXT_TAU: 0.07
-  M2_DEEP_TEXT_LOSS_WEIGHT: 0.5
-  M2_DEEP_ANCHOR_WEIGHT: 0.1
-
   TEXT_ALIGN: False
-  TEXT_CLIP_PATH: 'ViT-B-16.pt'
-  TEXT_N_CTX: 4
-  TEXT_MODALITY: 'RGB'
-  TEXT_TEMPLATE: 'a photo of a X view person with X X X X .'
+
+M2:
+  ENABLED: True
+  VARIANT: 'deep_text_c0_control'
+  CLIP_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
+  TEXT_BANK: '/mnt/cache/wanghanzhi/XK/Trajectory-m2-c/cache/m2_03_prompt_bank.pt'
+  TEMPERATURE: 0.07
+  DEEP_CONTEXT_LENGTH: 4
+  CONTROL_WIDTH: 64
+  CONTROL_RHO: 0.25
+  SHARE_CONTROL_PROJECTIONS: True
+  ZERO_INIT_CONTROL_OUTPUT: True
+  TEXT_ID_WEIGHT: 0.5
+  TEXT_ANCHOR_WEIGHT: 0.1
+
+PROMPT_STAGE:
+  MAX_UPDATES: 10000
+  IDENTITIES_PER_STEP: 16
+  IMAGES_PER_ID: 4
+  LEARNING_RATE: 0.00035
+  WEIGHT_DECAY: 0.0001
+  WARMUP_UPDATES: 100
+  TEMPERATURE: 0.07
 
 INPUT:
   SIZE_TRAIN: [256, 128]
@@ -42,7 +53,7 @@ INPUT:
 
 DATASETS:
   NAMES: ('WHU-MARS')
-  ROOT_DIR: ('/data')
+  ROOT_DIR: ('/mnt/cache/wanghanzhi/Datasets')
   MODALITIES: ['RGB', 'IR', 'Thermal']
   AERIAL_CAMS: [5, 6]
 
@@ -81,4 +92,3 @@ TEST:
   FEAT_NORM: 'yes'
 
 OUTPUT_DIR: './logs/m2_03_deep_text_c0_control_seed1234'
-

@@ -12,6 +12,42 @@ from yacs.config import CfgNode as CN
 
 _C = CN()
 # -----------------------------------------------------------------------------
+# Module-two experiment namespace.  Keep this separate from MODEL so that
+# enabling a method cannot be confused with the historical TEXT_ALIGN/VTC
+# switches.  The defaults are inert and preserve baseline/C0 construction.
+# -----------------------------------------------------------------------------
+_C.M2 = CN()
+_C.M2.ENABLED = False
+_C.M2.VARIANT = 'none'
+_C.M2.CLIP_PATH = ''
+_C.M2.FREEZE_VISUAL_PROJECTION = True
+_C.M2.TEMPERATURE = 0.07
+_C.M2.FEATURE_CACHE = ''
+_C.M2.TEXT_BANK = ''
+_C.M2.RGB_CENTERS = ''
+_C.M2.RELATION_BANK = ''
+_C.M2.TEACHER_WEIGHT = ''
+_C.M2.ID_PROMPT_WEIGHT = ''
+_C.M2.DEEP_CONTEXT_INIT = ''
+_C.M2.DEEP_CONTEXT_LENGTH = 4
+_C.M2.CONTROL_WIDTH = 64
+_C.M2.CONTROL_RHO = 0.25
+_C.M2.SHARE_CONTROL_PROJECTIONS = True
+_C.M2.ZERO_INIT_CONTROL_OUTPUT = True
+_C.M2.TEXT_ID_WEIGHT = 0.5
+_C.M2.TEXT_ANCHOR_WEIGHT = 0.1
+
+_C.PROMPT_STAGE = CN()
+_C.PROMPT_STAGE.MAX_UPDATES = 10000
+_C.PROMPT_STAGE.IDENTITIES_PER_STEP = 16
+_C.PROMPT_STAGE.IMAGES_PER_ID = 4
+_C.PROMPT_STAGE.CONDITION_BALANCED = True
+_C.PROMPT_STAGE.LEARNING_RATE = 3.5e-4
+_C.PROMPT_STAGE.WEIGHT_DECAY = 1e-4
+_C.PROMPT_STAGE.WARMUP_UPDATES = 100
+_C.PROMPT_STAGE.TEMPERATURE = 0.07
+
+# -----------------------------------------------------------------------------
 # MODEL
 # -----------------------------------------------------------------------------
 _C.MODEL = CN()
@@ -202,14 +238,6 @@ _C.MODEL.TOKEN_TRAJECTORY_VARIANT = 'dense'
 _C.MODEL.TOKEN_TRAJECTORY_EMA_DECAY = 0.25
 _C.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM = 16
 _C.MODEL.TOKEN_TRAJECTORY_RANK = 16
-_C.MODEL.M2_DEEP_C0 = False
-_C.MODEL.M2_DEEP_CONTEXT_LENGTH = 4
-_C.MODEL.M2_CONTROL_WIDTH = 64
-_C.MODEL.M2_CONTROL_RHO = 0.25
-_C.MODEL.M2_DEEP_TEXT_BANK = ''
-_C.MODEL.M2_DEEP_TEXT_TAU = 0.07
-_C.MODEL.M2_DEEP_TEXT_LOSS_WEIGHT = 0.5
-_C.MODEL.M2_DEEP_ANCHOR_WEIGHT = 0.1
 
 # ---- VPR: view-aware continuous positional residuals -----------------------
 # A low-rank DCT field is evaluated on the patch grid before every Transformer

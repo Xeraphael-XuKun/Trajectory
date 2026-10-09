@@ -113,6 +113,8 @@ class build_transformer(nn.Module):
                 raise ValueError('MODEL.MOD_DELTA needs at least two modalities')
             n_mod_delta = len(self.modalities) - 1
 
+        m2 = cfg.M2
+        self.m2_deep_text = bool(m2.ENABLED and m2.VARIANT == 'deep_text_c0_control')
         self.base=factory[cfg.MODEL.TRANSFORMER_TYPE](img_size=cfg.INPUT.SIZE_TRAIN, sie_xishu=cfg.MODEL.SIE_COE,
                                                         camera=camera_num, view=view_num, stride_size=cfg.MODEL.STRIDE_SIZE, drop_path_rate=cfg.MODEL.DROP_PATH,
                                                         drop_rate= cfg.MODEL.DROP_OUT,
@@ -138,14 +140,16 @@ class build_transformer(nn.Module):
                                                         token_trajectory_ema_decay=cfg.MODEL.TOKEN_TRAJECTORY_EMA_DECAY,
                                                         token_trajectory_hidden_dim=cfg.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM,
                                                         token_trajectory_rank=cfg.MODEL.TOKEN_TRAJECTORY_RANK,
-                                                        deep_c0_control=getattr(cfg.MODEL, 'M2_DEEP_C0', False),
-                                                        deep_c0_context_length=getattr(cfg.MODEL, 'M2_DEEP_CONTEXT_LENGTH', 4),
-                                                        deep_c0_control_width=getattr(cfg.MODEL, 'M2_CONTROL_WIDTH', 64),
-                                                        deep_c0_control_rho=getattr(cfg.MODEL, 'M2_CONTROL_RHO', 0.25),
+                                                        deep_c0_control=self.m2_deep_text,
+                                                        deep_c0_context_length=cfg.M2.DEEP_CONTEXT_LENGTH,
+                                                        deep_c0_control_width=cfg.M2.CONTROL_WIDTH,
+                                                        deep_c0_control_rho=cfg.M2.CONTROL_RHO,
                                                         vpr=self.use_vpr,
                                                         vpr_rank=cfg.MODEL.VPR_RANK,
                                                         vpr_conditional=cfg.MODEL.VPR_CONDITIONAL,
                                                         vpr_zero_mean=cfg.MODEL.VPR_ZERO_MEAN)
+        if self.m2_deep_text and m2.FREEZE_VISUAL_PROJECTION:
+            self.base.clip_proj.requires_grad_(False)
 
         if self.use_mod_delta:
             print('Mod-delta: banks for {} (reference {} gets none), {:,} params'
@@ -252,7 +256,6 @@ class build_transformer(nn.Module):
         self.text_target = cfg.MODEL.TEXT_TARGET
         self.prompts = None
         self.deep_identity = None
-        self.m2_deep_text = bool(getattr(cfg.MODEL, 'M2_DEEP_C0', False))
         if self.text_align and self.text_target not in ('view', 'modality'):
             raise ValueError("MODEL.TEXT_TARGET must be 'view' or 'modality', "
                              "got {!r}".format(self.text_target))
@@ -268,18 +271,22 @@ class build_transformer(nn.Module):
         if self.m2_deep_text:
             if getattr(self.base, 'clip_proj', None) is None:
                 raise ValueError('M2-3 deep text needs vit_base_clip visual projection')
-            if not cfg.MODEL.TEXT_CLIP_PATH:
-                raise ValueError('M2-3 deep text needs MODEL.TEXT_CLIP_PATH')
+            if not m2.CLIP_PATH:
+                raise ValueError('M2-3 deep text needs M2.CLIP_PATH')
+            if not m2.TEXT_BANK:
+                raise ValueError('M2-3 requires M2.TEXT_BANK from the completed stage-A prompt run')
             from .m2.deep_text_control import DeepIdentityText
-            clip_sd = _read_clip_checkpoint(cfg.MODEL.TEXT_CLIP_PATH)
-            self.deep_identity = DeepIdentityText(
-                clip_sd, num_classes=self.num_classes,
-                bank_path=getattr(cfg.MODEL, 'M2_DEEP_TEXT_BANK', '') or None,
-                n_ctx=getattr(cfg.MODEL, 'M2_DEEP_CONTEXT_LENGTH', 4))
-            if not (getattr(cfg.MODEL, 'M2_DEEP_TEXT_BANK', '') or ''):
-                with torch.no_grad():
-                    self.deep_identity.text_anchors.copy_(
-                        self.deep_identity(torch.arange(self.num_classes)))
+            clip_sd = _read_clip_checkpoint(m2.CLIP_PATH)
+            with torch.random.fork_rng(devices=[]):
+                self.deep_identity = DeepIdentityText(
+                    clip_sd, num_classes=self.num_classes,
+                    bank_path=m2.TEXT_BANK or None,
+                    n_ctx=m2.DEEP_CONTEXT_LENGTH)
+            # The visual controller and text tower must backpropagate through
+            # one Parameter object.  Replacing the controller's constructor
+            # context also keeps the C0-side module free of a second context
+            # bank that could drift independently.
+            self.base.deep_c0_controller.context = self.deep_identity.contexts
             print('M2-3 deep identity text enabled: contexts {}, classes {}'.format(
                 self.deep_identity.contexts.shape[0], self.num_classes))
 
@@ -480,7 +487,8 @@ class build_transformer(nn.Module):
                     raise ValueError('M2-3 deep text training needs identity labels')
                 ids, inverse = torch.unique(label.long(), sorted=True, return_inverse=True)
                 text = self.deep_identity(ids)
-                visual = torch.nn.functional.normalize(self.base.clip_proj(global_feat).float(), dim=-1)
+                visual = torch.nn.functional.normalize(
+                    global_feat.float() @ self.base.clip_proj.float(), dim=-1)
                 anchor = self.deep_identity.text_anchors.index_select(0, ids).to(visual.device)
                 return cls_score, global_feat, feat, {
                     'kind': 'deep_text', 'visual': visual, 'text': text,
@@ -593,6 +601,13 @@ class build_transformer(nn.Module):
         if 'state_dict' in param_dict:
             param_dict = param_dict['state_dict']
         own = self.state_dict()
+        normalized_keys = {key.replace('module.', '') for key in param_dict}
+        control_keys = {key for key in own if 'deep_c0_controller' in key}
+        incoming_control = {key for key in normalized_keys if 'deep_c0_controller' in key}
+        if bool(control_keys) != bool(incoming_control):
+            raise ValueError('M2-3 checkpoint/config mismatch: controller is required at inference')
+        if control_keys and not control_keys.issubset(normalized_keys):
+            raise ValueError('M2-3 checkpoint is missing controller/shared context tensors')
 
         # Preserve old baseline/dense loading, but never silently evaluate a
         # new variant checkpoint with another variant or its default settings.

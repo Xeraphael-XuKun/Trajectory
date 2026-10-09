@@ -485,10 +485,11 @@ class TransReID(nn.Module):
         if deep_c0_control:
             if self.token_trajectory is None:
                 raise ValueError('deep C0 control requires dense TOKEN_TRAJECTORY')
-            self.deep_c0_controller = DeepTextC0Controller(
-                depth, num_patches + 1, embed_dim=embed_dim,
-                n_ctx=deep_c0_context_length, width=deep_c0_control_width,
-                rho=deep_c0_control_rho)
+            with torch.random.fork_rng(devices=[]):
+                self.deep_c0_controller = DeepTextC0Controller(
+                    depth, num_patches + 1, embed_dim=embed_dim,
+                    n_ctx=deep_c0_context_length, width=deep_c0_control_width,
+                    rho=deep_c0_control_rho)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
