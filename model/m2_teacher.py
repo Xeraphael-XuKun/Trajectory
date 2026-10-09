@@ -29,7 +29,9 @@ class ConditionalFeatureTeacher(nn.Module):
   return self.norm(feat)
  def forward_visual(self, backbone, images, modality, platform):
   """Run the visual transformer with per-sample Q/V deltas."""
+  off = torch.zeros(images.shape[0], device=images.device, dtype=images.dtype)
   return backbone(images, modal_label=None, view_label=None,
+                  trajectory_gate=off,
                   conditional_lora=self.lora,
                   conditional_modality=modality,
                   conditional_platform=platform)
