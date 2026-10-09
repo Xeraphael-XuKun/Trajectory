@@ -381,6 +381,10 @@ def do_train(cfg,
     meter_ls = [AverageMeter() for _ in range(4)]
     meter_text = AverageMeter()
     text_weight = cfg.SOLVER.TEXT_LOSS_WEIGHT if cfg.MODEL.TEXT_ALIGN else 0.0
+    m2_bank = None
+    if bool(cfg.M2.ENABLED) and cfg.M2.VARIANT == 'condition_text_bridge':
+        from model.m2.condition_bridge import load_text_bank
+        m2_bank = load_text_bank(cfg.M2.TEXT_BANK, device=device)
     last_text_stats = None
 
     meter_vpr_text = AverageMeter()
@@ -517,6 +521,15 @@ def do_train(cfg,
                         ce_split_view, ce_split_mod, ce_groups)
                 loss, il, tl = loss_fn(cls_score, global_feat, target_rep,
                                        target_ce=target_ce)
+                if m2_bank is not None:
+                    from model.m2.condition_bridge import condition_bridge_loss
+                    z = global_feat.float() @ model_meta.base.clip_proj.float()
+                    mods = torch.cat([torch.full_like(target, k) for k in range(num_modalities)])
+                    m2_loss, _ = condition_bridge_loss(z, target_rep, mods, m2_bank,
+                        temperature=float(cfg.M2.TEMPERATURE),
+                        all_weight=float(cfg.M2.TEXT_ALL_WEIGHT),
+                        cross_weight=float(cfg.M2.TEXT_CROSS_WEIGHT))
+                    loss = loss + m2_loss
                 vpr_aux_total = loss.new_zeros(())
 
                 if aux is not None and aux.get('kind') == 'vpr':
