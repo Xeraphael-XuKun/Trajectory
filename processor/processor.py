@@ -889,3 +889,4 @@ def do_inference(cfg,
     for r in [1, 5, 10]:
         logger.info('CMC curve, Rank-{:<3}:{:.2%}'.format(r, cmc[r - 1]))
     return cmc[0], cmc[4]
+
