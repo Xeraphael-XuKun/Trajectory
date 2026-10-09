@@ -175,6 +175,17 @@ class build_transformer(nn.Module):
             # and it is safe to do here, before the heads exist.
             self.base.load_param(model_path)
             print('Loading pretrained model......from {}'.format(model_path))
+        # M2 text losses use the original CLIP visual projection as a fixed
+        # coordinate system. Freeze it explicitly while retaining its input
+        # gradient to the ReID feature.
+        m2_cfg = getattr(cfg, 'M2', None)
+        if (m2_cfg is not None and bool(m2_cfg.ENABLED)
+                and str(m2_cfg.VARIANT) != 'none'
+                and bool(getattr(m2_cfg, 'FREEZE_VISUAL_PROJECTION', True))):
+            if getattr(self.base, 'clip_proj', None) is None:
+                raise ValueError('M2 text losses require vit_base_clip/clip_proj')
+            self.base.clip_proj.requires_grad_(False)
+
         elif pretrain_choice == 'no':
             print('PRETRAIN_CHOICE is "no": training from random initialisation')
 
@@ -617,3 +628,4 @@ def make_model(cfg, num_class, camera_num, view_num):
     model = build_transformer(num_class, camera_num, view_num, cfg, __factory_T_type)
     print('===========building transformer===========')
     return model
+
