@@ -14,6 +14,12 @@ class ConditionalQVLora(nn.Module):
   return d('q_m',mod)+d('q_p',plat),d('v_m',mod)+d('v_p',plat)
  def qkv_weight(self,w,layer,mod,plat):
   q,v=self.delta(layer,int(mod),int(plat));o=w.clone();o[:self.dim]+=q;o[2*self.dim:3*self.dim]+=v;return o
+ def qkv_delta(self,layer,mod,plat,device=None):
+  mod=torch.as_tensor(mod,device=device).long().view(-1); plat=torch.as_tensor(plat,device=device).long().view(-1)
+  q=[]; v=[]
+  for m,p in zip(mod.tolist(),plat.tolist()):
+   a,b=self.delta(layer,m,p); q.append(a); v.append(b)
+  return torch.cat([torch.stack(q),torch.zeros_like(torch.stack(q)),torch.stack(v)],dim=1)
 class ConditionalFeatureTeacher(nn.Module):
  """Condition adapter used by teacher training; frozen CLIP features are adapted per label."""
  def __init__(self,dim=768,**kw):
@@ -21,6 +27,12 @@ class ConditionalFeatureTeacher(nn.Module):
  def forward(self,feat,modality,platform):
   # Feature-level execution is useful for cache smoke tests; production visual path uses qkv_weight.
   return self.norm(feat)
+ def forward_visual(self, backbone, images, modality, platform):
+  """Run the visual transformer with per-sample Q/V deltas."""
+  return backbone(images, modal_label=None, view_label=None,
+                  conditional_lora=self.lora,
+                  conditional_modality=modality,
+                  conditional_platform=platform)
 def normalized_clip_logits(feat,proj,text_bank,tau=.07):
  return F.normalize(feat.float()@proj.float(),dim=-1)@F.normalize(text_bank.float(),dim=-1).t()/tau
 def kd_kl(logits_teacher,logits_student,temperature=2.):

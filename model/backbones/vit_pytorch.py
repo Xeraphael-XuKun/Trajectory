@@ -145,9 +145,12 @@ class Attention(nn.Module):
             head_dim, num_heads, theta=rope_theta, trainable=rope_freq_trainable,
             gate=rope_gate) if rope else None
 
-    def forward(self, x, chart=None):
+    def forward(self, x, chart=None, qkv_delta=None):
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        qkv = self.qkv(x)
+        if qkv_delta is not None:
+            qkv = qkv + qkv_delta.to(dtype=qkv.dtype, device=qkv.device).unsqueeze(1)
+        qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
 
         if chart is not None and self.rope is not None:
@@ -190,8 +193,8 @@ class Block(nn.Module):
         else:
             self.gamma_1 = self.gamma_2 = None
 
-    def forward(self, x, chart=None):
-        a = self.attn(self.norm1(x), chart=chart)
+    def forward(self, x, chart=None, qkv_delta=None):
+        a = self.attn(self.norm1(x), chart=chart, qkv_delta=qkv_delta)
         m_in = x + self.drop_path(a if self.gamma_1 is None else self.gamma_1 * a)
         m = self.mlp(self.norm2(m_in))
         return m_in + self.drop_path(m if self.gamma_2 is None else self.gamma_2 * m)
@@ -599,7 +602,8 @@ class TransReID(nn.Module):
         return torch.cat([cls_pos.to(dtype=dtype), patch_pos], dim=1)
 
     def forward_features(self, x, camera_id, modal_id, view_id, delta_gate=None,
-                         vpr_gate=None, trajectory_gate=None):
+                         vpr_gate=None, trajectory_gate=None, conditional_lora=None,
+                         conditional_modality=None, conditional_platform=None):
         """delta_gate: None, or [B] / [B,1,1] scaling the layer-wise increments
         per image.  None means "apply them everywhere", which is what every run
         before the text-alignment work did and must stay bit-identical."""
@@ -682,7 +686,12 @@ class TransReID(nn.Module):
                     i, previous_velocity, previous_previous_velocity,
                     gate=trajectory_gate)
             block_input = x
-            x = blk(x, chart=chart)
+            qkv_delta = None
+            if conditional_lora is not None:
+                qkv_delta = conditional_lora.qkv_delta(i, conditional_modality,
+                                                        conditional_platform,
+                                                        device=x.device)
+            x = blk(x, chart=chart, qkv_delta=qkv_delta)
             if self.token_trajectory is not None:
                 current_velocity = x - block_input
                 # T3 stores EMA velocities only within this image forward.
@@ -700,10 +709,15 @@ class TransReID(nn.Module):
         return x[:, 0]
 
     def forward(self, x, cam_label=None, modal_label=None, view_label=None,
-                delta_gate=None, vpr_gate=None, trajectory_gate=None):
+                delta_gate=None, vpr_gate=None, trajectory_gate=None,
+                conditional_lora=None, conditional_modality=None,
+                conditional_platform=None):
         x = self.forward_features(x, cam_label, modal_label, view_label,
                                   delta_gate=delta_gate, vpr_gate=vpr_gate,
-                                  trajectory_gate=trajectory_gate)
+                                  trajectory_gate=trajectory_gate,
+                                  conditional_lora=conditional_lora,
+                                  conditional_modality=conditional_modality,
+                                  conditional_platform=conditional_platform)
         return x
 
     def _load_rope_freqs(self, freqs):

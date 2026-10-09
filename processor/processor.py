@@ -539,7 +539,10 @@ def do_train(cfg,
                     cam_all = torch.cat(camids, dim=0)
                     plat_all = torch.isin(cam_all, ce_aerial.to(cam_all.device)).long()
                     with torch.no_grad():
-                        g_teacher = m2_teacher(model_meta.base(x_all), mod_all, plat_all)
+                        if hasattr(m2_teacher, 'forward_visual'):
+                            g_teacher = m2_teacher.forward_visual(model_meta.base, x_all, mod_all, plat_all)
+                        else:
+                            g_teacher = m2_teacher(model_meta.base(x_all), mod_all, plat_all)
                         z_teacher = torch.nn.functional.normalize(g_teacher.float()[:, :512], dim=-1)
                         lt = z_teacher @ m2_text.to(z_teacher.device).t() / float(getattr(cfg.MODEL, 'M2_TEXT_TEMPERATURE', .07))
                     z_student = torch.nn.functional.normalize(global_feat.float()[:, :512], dim=-1)
