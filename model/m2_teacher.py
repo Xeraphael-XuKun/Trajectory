@@ -32,7 +32,7 @@ class ConditionalQVLora(nn.Module):
 class ConditionalFeatureTeacher(nn.Module):
  """Condition adapter used by teacher training; frozen CLIP features are adapted per label."""
  def __init__(self,dim=768,**kw):
-  super().__init__();self.lora=ConditionalQVLora(dim=dim,**kw);self.norm=nn.BatchNorm1d(dim);self.classifier=nn.LazyLinear(1)
+  super().__init__();self.lora=ConditionalQVLora(dim=dim,**kw);self.norm=nn.BatchNorm1d(dim);self.bn=self.norm;self.classifier=nn.LazyLinear(1)
  def forward(self,feat,modality,platform):
   # Feature-level execution is useful for cache smoke tests; production visual path uses qkv_weight.
   return self.norm(feat)
