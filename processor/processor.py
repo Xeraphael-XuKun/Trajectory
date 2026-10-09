@@ -375,6 +375,13 @@ def do_train(cfg,
         artifact = torch.load(cfg.M2.RELATION_BANK, map_location='cpu', weights_only=False)
         validate_artifact(artifact, cfg)
         relation_bank = artifact['relation'].to(device).detach()
+        # The dataloader exposes relabelled train IDs (0..N-1), while the
+        # offline cache carries an explicit PID order.  Never silently index
+        # the relation matrix by an assumed ordering.
+        pid_order = [int(x) for x in artifact['pid_order']]
+        if len(set(pid_order)) != len(pid_order):
+            raise ValueError('M2-4 relation cache pid_order contains duplicates')
+        pid_to_bank = {pid: i for i, pid in enumerate(pid_order)}
     if device:
         model.to(local_rank)
         if torch.cuda.device_count() > 1 and cfg.MODEL.DIST_TRAIN:
@@ -532,8 +539,16 @@ def do_train(cfg,
                     with amp.autocast(enabled=False):
                         mods = torch.arange(num_modalities, device=feat.device).repeat_interleave(len(target))
                         centers, ids, valid = identity_modality_centers(feat, target_rep, mods)
+                        try:
+                            bank_ids = torch.as_tensor(
+                                [pid_to_bank[int(x)] for x in ids.detach().cpu().tolist()],
+                                dtype=torch.long, device=device)
+                        except KeyError as exc:
+                            raise ValueError(
+                                'M2-4 relation cache pid_order does not cover '
+                                'the relabelled training PID {}'.format(exc.args[0]))
                         rel_loss, rel_stats = relation_kl(
-                            centers, relation_bank[ids][:, ids],
+                            centers, relation_bank[bank_ids][:, bank_ids],
                             cfg.M2.STUDENT_TEMPERATURE, cfg.M2.TEACHER_TEMPERATURE,
                             valid=valid, return_stats=True)
                         loss = loss + cfg.M2.RELATION_WEIGHT * rel_loss
