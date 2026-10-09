@@ -3,7 +3,7 @@
 
 MODEL:
   PRETRAIN_CHOICE: 'imagenet'
-  PRETRAIN_PATH: 'ViT-B-16.pt'
+  PRETRAIN_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
   TRANSFORMER_TYPE: 'vit_base_clip'
   METRIC_LOSS_TYPE: 'triplet'
   IF_LABELSMOOTH: 'off'
@@ -35,7 +35,7 @@ INPUT:
 
 DATASETS:
   NAMES: ('WHU-MARS')
-  ROOT_DIR: ('/data')
+  ROOT_DIR: '/mnt/cache/wanghanzhi/Datasets'
   MODALITIES: ['RGB', 'IR', 'Thermal']
   AERIAL_CAMS: [5, 6]
 
@@ -78,8 +78,8 @@ TEST:
 # M2-5 explicit keys
 MODEL:
   M2_VARIANT: 'conditional_teacher_distill'
-  M2_TEXT_BANK: '/mnt/cache/wanghanzhi/XK/Trajectory/m2_artifacts/shared_id_text_bank.pt'
-  M2_TEACHER_PATH: '/mnt/cache/wanghanzhi/XK/Trajectory/m2_artifacts/conditional_teacher_epoch60.pth'
+  M2_TEXT_BANK: '/mnt/cache/wanghanzhi/XK/outputs/m2-e/artifacts/shared_id_prompts_final.pt'
+  M2_TEACHER_PATH: '/mnt/cache/wanghanzhi/XK/outputs/m2-e/artifacts/conditional_teacher_epoch60.pth'
   M2_KD_TEMPERATURE: 2.0
   M2_KD_WEIGHT: 0.5
   M2_TEXT_TEMPERATURE: 0.07
@@ -93,4 +93,4 @@ SOLVER:
   CUDNN_BENCHMARK: True
 TEST:
   NECK_FEAT: 'after'
-OUTPUT_DIR: '/mnt/cache/wanghanzhi/XK/Trajectory/logs/m2_05_conditional_teacher_distill_seed1234'
+OUTPUT_DIR: '/mnt/cache/wanghanzhi/XK/outputs/m2-e/student'

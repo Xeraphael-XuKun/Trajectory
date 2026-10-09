@@ -450,7 +450,7 @@ def do_train(cfg,
     scaler = amp.GradScaler()
     model_meta = model.module if hasattr(model, 'module') else model
     m2_enabled = getattr(cfg.MODEL, 'M2_VARIANT', 'none') == 'conditional_teacher_distill'
-    m2_teacher = m2_text = None
+    m2_teacher = m2_teacher_backbone = m2_text = None
     m2_tau = float(getattr(cfg.MODEL, 'M2_KD_TEMPERATURE', 2.0))
     m2_weight = float(getattr(cfg.MODEL, 'M2_KD_WEIGHT', 0.5))
     if m2_enabled:
@@ -462,9 +462,22 @@ def do_train(cfg,
         m2_text = torch.load(text_path, map_location='cpu')['text_bank'].float().to(local_rank)
         m2_teacher = ConditionalFeatureTeacher(dim=768, modalities=3, platforms=2, rank=8, alpha=8).to(local_rank)
         state = torch.load(teacher_path, map_location='cpu')
+        if state.get('dim', 768) != 768 or state.get('split', 'train') != 'train':
+            raise ValueError('M2-5 teacher artifact must be a train-only 768-D Q/V-LoRA teacher')
         m2_teacher.load_state_dict(state.get('state_dict', state), strict=False)
         m2_teacher.eval()
         for p in m2_teacher.parameters(): p.requires_grad_(False)
+        # The teacher is a separate frozen copy of the original CLIP visual
+        # tower.  Reusing model_meta.base would make the target move with the
+        # student and would silently turn online KD into self-distillation.
+        from model.backbones.vit_pytorch import vit_base_clip
+        m2_teacher_backbone = vit_base_clip(
+            img_size=cfg.INPUT.SIZE_TRAIN,
+            stride_size=cfg.MODEL.STRIDE_SIZE).to(local_rank)
+        m2_teacher_backbone._load_clip_visual(
+            torch.load(cfg.MODEL.PRETRAIN_PATH, map_location='cpu', weights_only=False))
+        m2_teacher_backbone.eval()
+        for p in m2_teacher_backbone.parameters(): p.requires_grad_(False)
     feat_dim = getattr(model_meta, 'in_planes', 768)
     num_classes = getattr(model_meta, 'num_classes', 500)
     loss_type = cfg.SOLVER.LOSS_TYPE.lower().strip()
@@ -539,13 +552,13 @@ def do_train(cfg,
                     cam_all = torch.cat(camids, dim=0)
                     plat_all = torch.isin(cam_all, ce_aerial.to(cam_all.device)).long()
                     with torch.no_grad():
-                        if hasattr(m2_teacher, 'forward_visual'):
-                            g_teacher = m2_teacher.forward_visual(model_meta.base, x_all, mod_all, plat_all)
-                        else:
-                            g_teacher = m2_teacher(model_meta.base(x_all), mod_all, plat_all)
-                        z_teacher = torch.nn.functional.normalize(g_teacher.float()[:, :512], dim=-1)
+                        g_teacher = m2_teacher.forward_visual(
+                            m2_teacher_backbone, x_all, mod_all, plat_all)
+                        z_teacher = torch.nn.functional.normalize(
+                            g_teacher.float() @ m2_teacher_backbone.clip_proj.float(), dim=-1)
                         lt = z_teacher @ m2_text.to(z_teacher.device).t() / float(getattr(cfg.MODEL, 'M2_TEXT_TEMPERATURE', .07))
-                    z_student = torch.nn.functional.normalize(global_feat.float()[:, :512], dim=-1)
+                    z_student = torch.nn.functional.normalize(
+                        global_feat.float() @ model_meta.base.clip_proj.float(), dim=-1)
                     ls = z_student @ m2_text.to(z_student.device).t() / float(getattr(cfg.MODEL, 'M2_TEXT_TEMPERATURE', .07))
                     loss = loss + m2_weight * kd_kl(lt, ls, m2_tau)
                 vpr_aux_total = loss.new_zeros(())

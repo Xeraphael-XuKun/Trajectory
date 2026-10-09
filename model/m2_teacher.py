@@ -14,12 +14,21 @@ class ConditionalQVLora(nn.Module):
   return d('q_m',mod)+d('q_p',plat),d('v_m',mod)+d('v_p',plat)
  def qkv_weight(self,w,layer,mod,plat):
   q,v=self.delta(layer,int(mod),int(plat));o=w.clone();o[:self.dim]+=q;o[2*self.dim:3*self.dim]+=v;return o
- def qkv_delta(self,layer,mod,plat,device=None):
+ def qkv_delta(self,layer,mod,plat,x=None,device=None):
   mod=torch.as_tensor(mod,device=device).long().view(-1); plat=torch.as_tensor(plat,device=device).long().view(-1)
   q=[]; v=[]
   for m,p in zip(mod.tolist(),plat.tolist()):
    a,b=self.delta(layer,m,p); q.append(a); v.append(b)
-  return torch.cat([torch.stack(q),torch.zeros_like(torch.stack(q)),torch.stack(v)],dim=1)
+  q=torch.stack(q); v=torch.stack(v)
+  if x is None:
+   # Weight-form fallback retained for smoke tests and inspection.
+   return torch.cat([q,torch.zeros_like(q),v],dim=1)
+  # True LoRA acts on each token's input.  The previous implementation added
+  # a condition-dependent bias to q/v, which is not a Q/V low-rank adapter.
+  return torch.cat([torch.einsum('bnd,bdk->bnk', x, q.transpose(1, 2)),
+                    torch.zeros(x.shape[0], x.shape[1], x.shape[2],
+                                dtype=x.dtype, device=x.device),
+                    torch.einsum('bnd,bdk->bnk', x, v.transpose(1, 2))], dim=-1)
 class ConditionalFeatureTeacher(nn.Module):
  """Condition adapter used by teacher training; frozen CLIP features are adapted per label."""
  def __init__(self,dim=768,**kw):

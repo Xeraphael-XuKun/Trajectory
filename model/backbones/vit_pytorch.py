@@ -149,7 +149,8 @@ class Attention(nn.Module):
         B, N, C = x.shape
         qkv = self.qkv(x)
         if qkv_delta is not None:
-            qkv = qkv + qkv_delta.to(dtype=qkv.dtype, device=qkv.device).unsqueeze(1)
+            delta = qkv_delta.to(dtype=qkv.dtype, device=qkv.device)
+            qkv = qkv + (delta.unsqueeze(1) if delta.ndim == 2 else delta)
         qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
 
@@ -688,9 +689,9 @@ class TransReID(nn.Module):
             block_input = x
             qkv_delta = None
             if conditional_lora is not None:
-                qkv_delta = conditional_lora.qkv_delta(i, conditional_modality,
-                                                        conditional_platform,
-                                                        device=x.device)
+                qkv_delta = conditional_lora.qkv_delta(
+                    i, conditional_modality, conditional_platform, x=x,
+                    device=x.device)
             x = blk(x, chart=chart, qkv_delta=qkv_delta)
             if self.token_trajectory is not None:
                 current_velocity = x - block_input
