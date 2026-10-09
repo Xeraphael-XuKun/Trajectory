@@ -139,6 +139,25 @@ def feature_geometry(feat, n_modalities, group_size):
     return out
 
 
+def deep_text_identity_loss(aux, tau=0.07, text_weight=0.5, anchor_weight=0.1):
+    """M2-3 image-to-current-identity text loss and anchor drift guard.
+
+    ``aux`` is deliberately plain tensors so this helper can be CPU checked
+    without constructing the full ReID model.  Text targets are expected to be
+    detached stage-A anchors; current text embeddings retain context gradients.
+    """
+    if aux is None or aux.get('kind') != 'deep_text':
+        return None, {}
+    z = F.normalize(aux['visual'].float(), dim=-1)
+    t = F.normalize(aux['text'].float(), dim=-1)
+    y = aux['targets'].long()
+    loss_it = F.cross_entropy((z @ t.t()) / float(tau), y)
+    anchor = aux.get('anchor')
+    loss_anchor = z.new_zeros(()) if anchor is None else (1 - (t * F.normalize(anchor.float(), dim=-1)).sum(-1)).mean()
+    total = float(text_weight) * loss_it + float(anchor_weight) * loss_anchor
+    return total, {'loss_it': loss_it.detach(), 'loss_anchor': loss_anchor.detach()}
+
+
 def ce_split_target(target_rep, camids, n_modalities, aerial_cams,
                     split_view, split_modality, modality_groups=None):
     """`pid` -> `pid * slots + slot`, where slot encodes the view / spectrum.
