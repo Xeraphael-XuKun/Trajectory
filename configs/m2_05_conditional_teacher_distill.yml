@@ -24,13 +24,6 @@ MODEL:
   TEXT_MODALITY: 'RGB'
   TEXT_TEMPLATE: 'a photo of a X view person with X X X X .'
 
-  M2_VARIANT: 'conditional_teacher_distill'
-  M2_TEXT_BANK: '/mnt/cache/wanghanzhi/XK/outputs/m2-e/artifacts/shared_id_text_bank.pt'
-  M2_TEACHER_PATH: '/mnt/cache/wanghanzhi/XK/outputs/m2-e/artifacts/conditional_teacher_epoch60.pth'
-  M2_KD_TEMPERATURE: 2.0
-  M2_KD_WEIGHT: 0.5
-  M2_TEXT_TEMPERATURE: 0.07
-  M2_TEACHER_TEXT_WEIGHT: 0.5
 
 INPUT:
   SIZE_TRAIN: [256, 128]
@@ -83,6 +76,24 @@ TEST:
 
 
 
-# M2-5 explicit keys
+M2:
+  ENABLED: True
+  VARIANT: 'conditional_teacher_distill'
+  TEXT_BANK: '/mnt/cache/wanghanzhi/XK/outputs/m2-e/artifacts/shared_id_text_bank.pt'
+  TEACHER_WEIGHT: '/mnt/cache/wanghanzhi/XK/outputs/m2-e/artifacts/conditional_teacher_epoch60.pth'
+  KD_TEMPERATURE: 2.0
+  KD_WEIGHT: 0.5
+  TEXT_TEMPERATURE: 0.07
+  TEACHER_TEXT_WEIGHT: 0.5
+
+TEACHER_STAGE:
+  MAX_EPOCHS: 60
+  LORA_TARGETS: ['q', 'v']
+  LORA_RANK: 8
+  LORA_ALPHA: 8
+  MODALITY_BANKS: 3
+  PLATFORM_BANKS: 2
+  TEXT_ID_WEIGHT: 0.5
+  TEMPERATURE: 0.07
 
 OUTPUT_DIR: '/mnt/cache/wanghanzhi/XK/outputs/m2-e/student'

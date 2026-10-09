@@ -449,18 +449,22 @@ def do_train(cfg,
     )
     scaler = amp.GradScaler()
     model_meta = model.module if hasattr(model, 'module') else model
-    m2_enabled = getattr(cfg.MODEL, 'M2_VARIANT', 'none') == 'conditional_teacher_distill'
+    m2_enabled = bool(cfg.M2.ENABLED) and cfg.M2.VARIANT == 'conditional_teacher_distill'
     m2_teacher = m2_teacher_backbone = m2_text = None
-    m2_tau = float(getattr(cfg.MODEL, 'M2_KD_TEMPERATURE', 2.0))
-    m2_weight = float(getattr(cfg.MODEL, 'M2_KD_WEIGHT', 0.5))
+    m2_tau = float(cfg.M2.KD_TEMPERATURE)
+    m2_weight = float(cfg.M2.KD_WEIGHT)
     if m2_enabled:
         from model.m2_teacher import ConditionalFeatureTeacher, kd_kl
-        text_path = str(getattr(cfg.MODEL, 'M2_TEXT_BANK', ''))
-        teacher_path = str(getattr(cfg.MODEL, 'M2_TEACHER_PATH', ''))
+        text_path = str(cfg.M2.TEXT_BANK)
+        teacher_path = str(cfg.M2.TEACHER_WEIGHT)
         if not text_path or not teacher_path:
-            raise ValueError('M2-5 requires MODEL.M2_TEXT_BANK and MODEL.M2_TEACHER_PATH')
+            raise ValueError('M2-5 requires M2.TEXT_BANK and M2.TEACHER_WEIGHT')
         m2_text = torch.load(text_path, map_location='cpu')['text_bank'].float().to(local_rank)
-        m2_teacher = ConditionalFeatureTeacher(dim=768, modalities=3, platforms=2, rank=8, alpha=8).to(local_rank)
+        m2_teacher = ConditionalFeatureTeacher(
+            dim=768, modalities=int(cfg.TEACHER_STAGE.MODALITY_BANKS),
+            platforms=int(cfg.TEACHER_STAGE.PLATFORM_BANKS),
+            rank=int(cfg.TEACHER_STAGE.LORA_RANK),
+            alpha=float(cfg.TEACHER_STAGE.LORA_ALPHA)).to(local_rank)
         state = torch.load(teacher_path, map_location='cpu')
         if state.get('dim', 768) != 768 or state.get('split', 'train') != 'train':
             raise ValueError('M2-5 teacher artifact must be a train-only 768-D Q/V-LoRA teacher')
@@ -556,10 +560,10 @@ def do_train(cfg,
                             m2_teacher_backbone, x_all, mod_all, plat_all)
                         z_teacher = torch.nn.functional.normalize(
                             g_teacher.float() @ m2_teacher_backbone.clip_proj.float(), dim=-1)
-                        lt = z_teacher @ m2_text.to(z_teacher.device).t() / float(getattr(cfg.MODEL, 'M2_TEXT_TEMPERATURE', .07))
+                        lt = z_teacher @ m2_text.to(z_teacher.device).t() / float(cfg.M2.TEXT_TEMPERATURE)
                     z_student = torch.nn.functional.normalize(
                         global_feat.float() @ model_meta.base.clip_proj.float(), dim=-1)
-                    ls = z_student @ m2_text.to(z_student.device).t() / float(getattr(cfg.MODEL, 'M2_TEXT_TEMPERATURE', .07))
+                    ls = z_student @ m2_text.to(z_student.device).t() / float(cfg.M2.TEXT_TEMPERATURE)
                     loss = loss + m2_weight * kd_kl(lt, ls, m2_tau)
                 vpr_aux_total = loss.new_zeros(())
 

@@ -203,17 +203,6 @@ _C.MODEL.TOKEN_TRAJECTORY_EMA_DECAY = 0.25
 _C.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM = 16
 _C.MODEL.TOKEN_TRAJECTORY_RANK = 16
 
-# AS-ReID module-two switches. `none` preserves the historical path.
-_C.MODEL.M2_VARIANT = 'none'
-_C.MODEL.M2_TEXT_BANK = ''
-_C.MODEL.M2_TEACHER_PATH = ''
-_C.MODEL.M2_KD_TEMPERATURE = 2.0
-_C.MODEL.M2_KD_WEIGHT = 0.5
-_C.MODEL.M2_TEXT_TEMPERATURE = 0.07
-_C.MODEL.M2_TEACHER_TEXT_WEIGHT = 0.5
-_C.MODEL.M2_LORA_RANK = 8
-_C.MODEL.M2_LORA_ALPHA = 8.0
-
 # ---- VPR: view-aware continuous positional residuals -----------------------
 # A low-rank DCT field is evaluated on the patch grid before every Transformer
 # block.  It is sample-conditioned by the evolving CLS token, applied only to
@@ -582,3 +571,24 @@ _C.TEST.METRIC = 'sysu'
 # ---------------------------------------------------------------------------- #
 # Path to checkpoint and saved log of trained model
 _C.OUTPUT_DIR = ""
+
+# AS-ReID module-two public namespaces. `none` preserves the historical path.
+_C.M2 = CN()
+_C.M2.ENABLED = False
+_C.M2.VARIANT = 'none'
+_C.M2.TEXT_BANK = ''
+_C.M2.TEACHER_WEIGHT = ''
+_C.M2.KD_TEMPERATURE = 2.0
+_C.M2.KD_WEIGHT = 0.5
+_C.M2.TEXT_TEMPERATURE = 0.07
+_C.M2.TEACHER_TEXT_WEIGHT = 0.5
+
+_C.TEACHER_STAGE = CN()
+_C.TEACHER_STAGE.MAX_EPOCHS = 60
+_C.TEACHER_STAGE.LORA_TARGETS = ['q', 'v']
+_C.TEACHER_STAGE.LORA_RANK = 8
+_C.TEACHER_STAGE.LORA_ALPHA = 8.0
+_C.TEACHER_STAGE.MODALITY_BANKS = 3
+_C.TEACHER_STAGE.PLATFORM_BANKS = 2
+_C.TEACHER_STAGE.TEXT_ID_WEIGHT = 0.5
+_C.TEACHER_STAGE.TEMPERATURE = 0.07
