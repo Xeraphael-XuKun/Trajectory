@@ -530,8 +530,8 @@ class build_transformer(nn.Module):
                     'text': self.m2_text,
                     'inverter': self.m2_inverter,
                     'rgb_centers': self.m2_rgb_centers,
-                    'ground_temperature': float(cfg.MODEL.M2_TEMPERATURE),
-                    'xit_temperature': float(cfg.MODEL.M2_TEMPERATURE),
+                    'ground_temperature': float(m2_cfg.GROUND_TEMPERATURE),
+                    'xit_temperature': float(m2_cfg.CROSS_TEMPERATURE),
                 }
 
             if not self.text_align or camids is None:
@@ -675,6 +675,7 @@ def make_model(cfg, num_class, camera_num, view_num):
     model = build_transformer(num_class, camera_num, view_num, cfg, __factory_T_type)
     print('===========building transformer===========')
     return model
+
 
 
 

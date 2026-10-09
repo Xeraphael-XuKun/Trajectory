@@ -3,6 +3,7 @@ import argparse
 import torch
 import torch.nn.functional as F
 
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--input', required=True)
@@ -13,9 +14,19 @@ def main():
     required = ('features', 'pids', 'cams', 'modalities')
     if not all(k in obj for k in required):
         raise ValueError('input cache must contain features,pids,cams,modalities')
-    x, p, c, m = obj['features'].float(), obj['pids'].long(), obj['cams'].long(), obj['modalities']
-    sel = torch.tensor([str(v) == args.rgb for v in m], dtype=torch.bool)
-    if not sel.any(): raise ValueError('no RGB rows in input cache')
+    x = obj['features'].float()
+    p = obj['pids'].long()
+    c = obj['cams'].long()
+    m = obj['modalities']
+    names = obj.get('modality_names', ('RGB', 'IR', 'Thermal'))
+    if torch.is_tensor(m):
+        names = tuple(names)
+        rgb_index = names.index(args.rgb) if args.rgb in names else 0
+        sel = m.long() == rgb_index
+    else:
+        sel = torch.tensor([str(v) == args.rgb for v in m], dtype=torch.bool)
+    if not sel.any():
+        raise ValueError('no RGB rows in input cache; check modality metadata/mapping')
     classes = torch.unique(p[sel]).sort().values
     centers = []
     for y in classes:
@@ -27,4 +38,7 @@ def main():
     torch.save({'centers': torch.stack(centers), 'pids': classes,
                 'source': 'train-only RGB, camera-balanced', 'rgb': args.rgb}, args.output)
     print('saved {} centers to {}'.format(len(centers), args.output))
-if __name__ == '__main__': main()
+
+
+if __name__ == '__main__':
+    main()

@@ -16,7 +16,7 @@ INPUT:
   PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
 DATASETS:
   NAMES: ('WHU-MARS')
-  ROOT_DIR: ('/mnt/cache/wanghanzhi/Datasets/WHU-MARS')
+  ROOT_DIR: ('/mnt/cache/wanghanzhi/Datasets')
   MODALITIES: ['RGB', 'IR', 'Thermal']
   AERIAL_CAMS: [5, 6]
 DATALOADER:
@@ -54,4 +54,5 @@ M2:
   GROUND_TEMPERATURE: 0.07
   CROSS_TEMPERATURE: 0.07
   FREEZE_VISUAL_PROJECTION: True
+
 
