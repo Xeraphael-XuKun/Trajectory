@@ -690,7 +690,8 @@ class TransReID(nn.Module):
             qkv_delta = None
             if conditional_lora is not None:
                 qkv_delta = conditional_lora.qkv_delta(
-                    i, conditional_modality, conditional_platform, x=x,
+                    i, conditional_modality, conditional_platform,
+                    x=blk.norm1(x),
                     device=x.device)
             x = blk(x, chart=chart, qkv_delta=qkv_delta)
             if self.token_trajectory is not None:
