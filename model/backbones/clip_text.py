@@ -124,6 +124,27 @@ class CLIPTextEncoder(nn.Module):
         x = x[torch.arange(x.shape[0], device=x.device), eot_index]
         return x @ self.text_projection
 
+    def forward_deep(self, embeddings, eot_index, slot_indices, contexts):
+        """Encode with shared deep slots replacing hidden states before blocks 2..12.
+
+        ``contexts`` is [11, n_slot, width] and remains differentiable while all
+        CLIP weights stay frozen.  Slot replacement happens before each block,
+        after block 0 has processed the normal template.
+        """
+        x = embeddings + self.positional_embedding.to(embeddings.dtype)
+        x = x.permute(1, 0, 2)
+        slots = torch.as_tensor(slot_indices, device=x.device, dtype=torch.long)
+        for layer, blk in enumerate(self.resblocks):
+            if layer > 0:
+                c = contexts[layer - 1].to(dtype=x.dtype, device=x.device)
+                x = x.clone()
+                x[slots] = c.unsqueeze(1).expand(-1, x.shape[1], -1)
+            x = blk(x, self.attn_mask.to(x.dtype))
+        x = x.permute(1, 0, 2)
+        x = self.ln_final(x)
+        x = x[torch.arange(x.shape[0], device=x.device), eot_index]
+        return x @ self.text_projection
+
     def load_clip(self, param_dict):
         """Load the non-`visual.` half of a CLIP checkpoint.  Mirrors
         TransReID._load_clip_visual; every name was read off the real file."""

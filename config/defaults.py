@@ -206,6 +206,10 @@ _C.MODEL.M2_DEEP_C0 = False
 _C.MODEL.M2_DEEP_CONTEXT_LENGTH = 4
 _C.MODEL.M2_CONTROL_WIDTH = 64
 _C.MODEL.M2_CONTROL_RHO = 0.25
+_C.MODEL.M2_DEEP_TEXT_BANK = ''
+_C.MODEL.M2_DEEP_TEXT_TAU = 0.07
+_C.MODEL.M2_DEEP_TEXT_LOSS_WEIGHT = 0.5
+_C.MODEL.M2_DEEP_ANCHOR_WEIGHT = 0.1
 
 # ---- VPR: view-aware continuous positional residuals -----------------------
 # A low-rank DCT field is evaluated on the patch grid before every Transformer
