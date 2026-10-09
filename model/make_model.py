@@ -251,6 +251,8 @@ class build_transformer(nn.Module):
         self.text_align = cfg.MODEL.TEXT_ALIGN
         self.text_target = cfg.MODEL.TEXT_TARGET
         self.prompts = None
+        self.deep_identity = None
+        self.m2_deep_text = bool(getattr(cfg.MODEL, 'M2_DEEP_C0', False))
         if self.text_align and self.text_target not in ('view', 'modality'):
             raise ValueError("MODEL.TEXT_TARGET must be 'view' or 'modality', "
                              "got {!r}".format(self.text_target))
@@ -263,6 +265,24 @@ class build_transformer(nn.Module):
                 'MODEL.TEXT_MODALITY_TARGETS only means anything under '
                 "MODEL.TEXT_ALIGN True and MODEL.TEXT_TARGET 'modality'; "
                 'setting it otherwise would be silently ignored')
+        if self.m2_deep_text:
+            if getattr(self.base, 'clip_proj', None) is None:
+                raise ValueError('M2-3 deep text needs vit_base_clip visual projection')
+            if not cfg.MODEL.TEXT_CLIP_PATH:
+                raise ValueError('M2-3 deep text needs MODEL.TEXT_CLIP_PATH')
+            from .m2.deep_text_control import DeepIdentityText
+            clip_sd = _read_clip_checkpoint(cfg.MODEL.TEXT_CLIP_PATH)
+            self.deep_identity = DeepIdentityText(
+                clip_sd, num_classes=self.num_classes,
+                bank_path=getattr(cfg.MODEL, 'M2_DEEP_TEXT_BANK', '') or None,
+                n_ctx=getattr(cfg.MODEL, 'M2_DEEP_CONTEXT_LENGTH', 4))
+            if not (getattr(cfg.MODEL, 'M2_DEEP_TEXT_BANK', '') or ''):
+                with torch.no_grad():
+                    self.deep_identity.text_anchors.copy_(
+                        self.deep_identity(torch.arange(self.num_classes)))
+            print('M2-3 deep identity text enabled: contexts {}, classes {}'.format(
+                self.deep_identity.contexts.shape[0], self.num_classes))
+
         if self.text_align:
             from .backbones.clip_text import CLIPTextEncoder, ViewPrompts
             if getattr(self.base, 'clip_proj', None) is None:
@@ -454,6 +474,18 @@ class build_transformer(nn.Module):
                                   if x.is_cuda else None)
             feat = self.bottleneck(global_feat)
             cls_score = self.classifier(feat)
+
+            if self.m2_deep_text:
+                if label is None:
+                    raise ValueError('M2-3 deep text training needs identity labels')
+                ids, inverse = torch.unique(label.long(), sorted=True, return_inverse=True)
+                text = self.deep_identity(ids)
+                visual = torch.nn.functional.normalize(self.base.clip_proj(global_feat).float(), dim=-1)
+                anchor = self.deep_identity.text_anchors.index_select(0, ids).to(visual.device)
+                return cls_score, global_feat, feat, {
+                    'kind': 'deep_text', 'visual': visual, 'text': text,
+                    'anchor': anchor, 'targets': inverse, 'identity_ids': ids,
+                }
 
             if replay_aux:
                 rows = torch.arange(x.shape[0], device=x.device)

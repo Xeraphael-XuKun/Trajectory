@@ -400,6 +400,9 @@ def do_train(cfg,
     meter_ls = [AverageMeter() for _ in range(4)]
     meter_text = AverageMeter()
     text_weight = cfg.SOLVER.TEXT_LOSS_WEIGHT if cfg.MODEL.TEXT_ALIGN else 0.0
+    deep_text_weight = (float(getattr(cfg.MODEL, 'M2_DEEP_TEXT_LOSS_WEIGHT', 0.0))
+                        if getattr(cfg.MODEL, 'M2_DEEP_C0', False) else 0.0)
+    deep_anchor_weight = float(getattr(cfg.MODEL, 'M2_DEEP_ANCHOR_WEIGHT', 0.1))
     last_text_stats = None
 
     meter_vpr_text = AverageMeter()
@@ -562,6 +565,16 @@ def do_train(cfg,
                     loss = loss + text_weight * loss_text
                     meter_text.update(loss_text.item(), aux['feat_after'].shape[0])
                     last_text_stats = text_stats
+
+                if (aux is not None and aux.get('kind') == 'deep_text'
+                        and deep_text_weight > 0):
+                    loss_deep, deep_stats = deep_text_identity_loss(
+                        aux, tau=float(getattr(cfg.MODEL, 'M2_DEEP_TEXT_TAU', 0.07)),
+                        text_weight=deep_text_weight,
+                        anchor_weight=deep_anchor_weight)
+                    loss = loss + loss_deep
+                    meter_text.update(loss_deep.item(), aux['visual'].shape[0])
+                    last_text_stats = deep_stats
 
                 if twin_weight > 0:
                     per_modality = imgs[0].shape[0]
