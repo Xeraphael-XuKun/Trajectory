@@ -485,7 +485,16 @@ class build_transformer(nn.Module):
             if self.m2_deep_text:
                 if label is None:
                     raise ValueError('M2-3 deep text training needs identity labels')
-                ids, inverse = torch.unique(label.long(), sorted=True, return_inverse=True)
+                # ``x`` is concatenated modality-major above, so global_feat
+                # has one row per modality and per identity.  Repeat labels in
+                # the same order before building the local text target map.
+                text_target = label.long().repeat(len(imgs))
+                if text_target.numel() != global_feat.shape[0]:
+                    raise RuntimeError(
+                        'M2-3 visual/text target length mismatch: {} vs {}'
+                        .format(global_feat.shape[0], text_target.numel()))
+                ids, inverse = torch.unique(text_target, sorted=True,
+                                            return_inverse=True)
                 text = self.deep_identity(ids)
                 visual = torch.nn.functional.normalize(
                     global_feat.float() @ self.base.clip_proj.float(), dim=-1)
