@@ -206,6 +206,7 @@ _C.MODEL.TOKEN_TRAJECTORY_RANK = 16
 # AS-ReID module two, shared namespace (each worktree enables one variant).
 _C.M2 = CN()
 _C.M2.ENABLED = False
+_C.M2.RESUME = ''
 _C.M2.VARIANT = 'none'
 _C.M2.CLIP_PATH = ''
 _C.M2.RGB_CENTERS = ''

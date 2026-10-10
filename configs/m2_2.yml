@@ -1,27 +1,50 @@
-# M2-2: cross-layer state/correction trajectory text inversion.
+# Standalone configuration: original C0 settings plus M2-2.
 MODEL:
   PRETRAIN_CHOICE: 'imagenet'
   PRETRAIN_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
   TRANSFORMER_TYPE: 'vit_base_clip'
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: 'transformer'
+  NO_MARGIN: True
+  DEVICE_ID: ('0')
+  DIST_TRAIN: False
+  STRIDE_SIZE: [16, 16]
   TOKEN_TRAJECTORY: True
   TOKEN_TRAJECTORY_VARIANT: 'dense'
   TOKEN_TRAJECTORY_ACCEL_MIX: 0.0
+  PE_TYPE: 'learnable'
   PE_LAYERWISE: 'none'
+  PE_FREEZE_BASE: False
+  SIE_CAMERA: False
+  SIE_VIEW: False
   TEXT_ALIGN: False
-  TEXT_CLIP_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
+  VPR: False
+  MOD_DELTA: False
+  CE_SPLIT_VIEW: False
+  CE_SPLIT_MODALITY: False
 INPUT:
   SIZE_TRAIN: [256, 128]
   SIZE_TEST: [256, 128]
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
   PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
   PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
 DATASETS:
-  NAMES: ('WHU-MARS')
-  ROOT_DIR: ('/mnt/cache/wanghanzhi/Datasets')
+  NAMES: 'WHU-MARS'
+  ROOT_DIR: '/mnt/cache/wanghanzhi/Datasets'
   MODALITIES: ['RGB', 'IR', 'Thermal']
   AERIAL_CAMS: [5, 6]
+  PROTOCOL: 'ALL'
+  SUBDIR: 'WHU-MARS'
 DATALOADER:
   SAMPLER: 'PKM'
   NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+  SYNC_FRAMES: False
+  TIE_AUGMENTATION: False
 SOLVER:
   OPTIMIZER_NAME: 'Adam'
   SEED: 1234
@@ -29,19 +52,30 @@ SOLVER:
   MAX_EPOCHS: 60
   BASE_LR: 0.00035
   PRETRAINED_LR: 0.000005
+  BIAS_LR_FACTOR: 1
   IMS_PER_BATCH: 64
   WARMUP_ITERS: 100
+  WARMUP_METHOD: 'linear'
+  LARGE_FC_LR: False
   WEIGHT_DECAY: 1e-4
   WEIGHT_DECAY_BIAS: 1e-4
   CHECKPOINT_PERIOD: 60
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 10
   LOSS_TYPE: 'base'
+  TEXT_LOSS_WEIGHT: 0.0
+  TWIN_LOSS_WEIGHT: 0.0
+  TNCE_WEIGHT: 0.0
+  MOD_DELTA_ONLY: False
 TEST:
   EVAL: True
+  IMS_PER_BATCH: 1024
   NECK_FEAT: 'after'
   FEAT_NORM: 'yes'
+  METRIC: 'sysu'
+  RE_RANKING: False
+  TOP_K_EVAL: 0
 OUTPUT_DIR: '/mnt/cache/wanghanzhi/XK/m2-b/logs/student'
-
-
 M2:
   ENABLED: True
   VARIANT: 'trajectory_text_inversion'
@@ -54,5 +88,5 @@ M2:
   GROUND_TEMPERATURE: 0.07
   CROSS_TEMPERATURE: 0.07
   FREEZE_VISUAL_PROJECTION: True
-
-
+  TEXT_TARGET_STOP_GRAD: True
+  SUMMARY_STOP_GRAD: False

@@ -465,7 +465,14 @@ def do_train(cfg,
 
     group_size = cfg.DATALOADER.NUM_INSTANCE
 
-    for epoch in range(1, epochs + 1):
+    m2_active = getattr(model_meta, 'm2_variant', 'none') == 'trajectory_text_inversion'
+    m2_iterations = m2_updates = m2_amp_skips = 0
+    start_epoch = 1
+    if m2_active and cfg.M2.RESUME:
+        from utils.m2_checkpoint import restore_training
+        start_epoch, m2_iterations, m2_updates, m2_amp_skips = restore_training(
+            cfg.M2.RESUME, model_meta, optimizer, scheduler, scaler)
+    for epoch in range(start_epoch, epochs + 1):
         start_time = time.time()
         loss_meter.reset()
         acc_meter.reset()
@@ -521,26 +528,29 @@ def do_train(cfg,
                 vpr_aux_total = loss.new_zeros(())
 
                 if aux is not None and aux.get('kind') == 'm2_trajectory_text_inversion':
-                    words, _attn = aux['inverter'](aux['summary'])
-                    text_emb, eot = aux['inverter'].splice(words)
-                    # The tower is frozen by construction, but this forward is
-                    # intentionally outside no_grad: gradients flow into words,
-                    # the trajectory summary, C0 gain, and the visual backbone.
-                    text_feat = F.normalize(aux['text'](text_emb, torch.full(
-                        (text_emb.shape[0],), eot, dtype=torch.long,
-                        device=text_emb.device)).float(), dim=-1)
-                    pids_rep = target_rep
-                    raw_ground = ground_loss(text_feat, pids_rep,
-                                             aux['rgb_centers'], aux['ground_temperature'])
-                    row_mod = torch.arange(global_feat.shape[0], device=global_feat.device) // imgs[0].shape[0]
-                    z = F.normalize(global_feat.float() @ aux['proj'].float(), dim=-1)
-                    raw_xit = xit_loss(z, text_feat.detach(), pids_rep, row_mod,
-                                       aux['xit_temperature'])
+                    with amp.autocast(enabled=False):
+                        words, m2_attn = aux['inverter'](aux['summary'])
+                        text_emb, eot = aux['inverter'].splice(words)
+                        # The tower is frozen by construction, but this forward is
+                        # intentionally outside no_grad: gradients flow into words,
+                        # the trajectory summary, C0 gain, and the visual backbone.
+                        text_feat = F.normalize(aux['text'](text_emb, torch.full(
+                            (text_emb.shape[0],), eot, dtype=torch.long,
+                            device=text_emb.device)).float(), dim=-1)
+                        pids_rep = target_rep
+                        raw_ground = ground_loss(text_feat, pids_rep,
+                                                 aux['rgb_centers'], aux['ground_temperature'])
+                        row_mod = torch.arange(global_feat.shape[0], device=global_feat.device) // imgs[0].shape[0]
+                        z = F.normalize(global_feat.float() @ aux['proj'].float(), dim=-1)
+                        raw_xit = xit_loss(z, text_feat.detach(), pids_rep, row_mod,
+                                           aux['xit_temperature'])
                     loss = loss + float(cfg.M2.GROUND_WEIGHT) * raw_ground
                     loss = loss + float(cfg.M2.CROSS_IT_WEIGHT) * raw_xit
                     if n_iter % max(1, len(train_loader) // 10) == 0:
-                        print('Epoch[{}] M2-2 ground={:.4f} xit={:.4f}'.format(
-                            epoch, raw_ground.item(), raw_xit.item()))
+                        logger.info('Epoch[%s] M2-2 ground=%.4f xit=%.4f word_norm=%.4f depth_attention=%s',
+                                    epoch, raw_ground.item(), raw_xit.item(),
+                                    words.detach().norm(dim=-1).mean().item(),
+                                    m2_attn.detach().mean(dim=(0, 1)).cpu().tolist())
 
                 if aux is not None and aux.get('kind') == 'vpr':
                     if vpr_text_weight > 0:
@@ -638,8 +648,20 @@ def do_train(cfg,
                 display_loss = total_loss.detach()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if m2_active and n_iter % max(1, len(train_loader) // 10) == 0:
+                mapper_grad = model_meta.m2_inverter.word.weight.grad
+                gain_grad = model_meta.base.token_trajectory.gain.grad
+                logger.info('M2-2 mapper_grad=%.6g gain_grad=%.6g',
+                            mapper_grad.norm().item(), gain_grad.norm().item())
+            scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
+            if m2_active:
+                m2_iterations += 1
+                if scaler.get_scale() >= scale_before:
+                    m2_updates += 1
+                else:
+                    m2_amp_skips += 1
 
             if use_aux_modules:
                 with torch.no_grad():
@@ -823,7 +845,14 @@ def do_train(cfg,
                 )
             )
 
-        if epoch % checkpoint_period == 0:
+        if m2_active:
+            logger.info('M2-2 cumulative iterations=%s optimizer_updates=%s AMP_skips=%s',
+                        m2_iterations, m2_updates, m2_amp_skips)
+        if epoch % checkpoint_period == 0 and m2_active:
+            from utils.m2_checkpoint import save_training
+            save_training(cfg.OUTPUT_DIR, cfg.MODEL.NAME, epoch, model_meta,
+                          optimizer, scheduler, scaler, m2_iterations, m2_updates, m2_amp_skips)
+        elif epoch % checkpoint_period == 0:
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
                     torch.save(model.state_dict(), os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))

@@ -1,7 +1,9 @@
+import os
 import torch
 import torch.nn as nn
 from .backbones.vit_pytorch import vit_base_in, vit_base_clip, vit_ics_lup
 from .backbones.token_trajectory_variants import validate_trajectory_config
+from .backbones.token_trajectory import DenseCrossLayerTokenTrajectory
 from .m2_trajectory_inverter import TrajectoryInverter
 
 def weights_init_kaiming(m):
@@ -213,38 +215,57 @@ class build_transformer(nn.Module):
                            if m2_cfg is not None and bool(m2_cfg.ENABLED) else 'none')
         self.m2_inverter = None
         self.m2_text = None
+
+        if m2_cfg is not None and m2_cfg.ENABLED and self.m2_variant == 'none':
+            raise ValueError('M2.ENABLED=True requires M2.VARIANT=trajectory_text_inversion')
+        if self.m2_variant not in ('none', 'trajectory_text_inversion'):
+            raise ValueError('this worktree implements only M2-2 trajectory_text_inversion')
+        self.m2_ground_temperature = float(m2_cfg.GROUND_TEMPERATURE) if m2_cfg else 0.07
+        self.m2_xit_temperature = float(m2_cfg.CROSS_TEMPERATURE) if m2_cfg else 0.07
         if self.m2_variant == 'trajectory_text_inversion':
-            if not self.use_token_trajectory:
-                raise ValueError('M2-2 requires MODEL.TOKEN_TRAJECTORY=True')
-            if getattr(self.base, 'clip_proj', None) is None:
-                raise ValueError('M2-2 requires a CLIP visual projection (vit_base_clip)')
-            for p in self.base.clip_proj.parameters() if isinstance(self.base.clip_proj, nn.Module) else [self.base.clip_proj]:
-                p.requires_grad_(False)
-            clip_path = str(getattr(m2_cfg, 'CLIP_PATH', '') or cfg.MODEL.TEXT_CLIP_PATH)
-            if not clip_path:
-                raise ValueError('M2-2 requires M2.CLIP_PATH')
+            if (list(cfg.DATASETS.MODALITIES) != ['RGB', 'IR', 'Thermal'] or
+                    list(cfg.DATASETS.AERIAL_CAMS) != [5, 6] or
+                    cfg.MODEL.IF_LABELSMOOTH != 'off' or cfg.MODEL.PE_TYPE != 'learnable'):
+                raise ValueError('M2-2 requires separate RGB/IR/Thermal, cameras [5,6], original CE and learnable APE')
+            if (not self.use_token_trajectory or cfg.MODEL.TOKEN_TRAJECTORY_VARIANT != 'dense'
+                    or cfg.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX != 0.0):
+                raise ValueError('M2-2 requires velocity-only dense C0')
+            if (cfg.MODEL.TEXT_ALIGN or cfg.MODEL.VPR or cfg.MODEL.MOD_DELTA or
+                    cfg.MODEL.CE_SPLIT_VIEW or cfg.MODEL.CE_SPLIT_MODALITY or
+                    cfg.MODEL.SIE_CAMERA or cfg.MODEL.SIE_VIEW or cfg.MODEL.PE_FREEZE_BASE or
+                    cfg.SOLVER.LOSS_TYPE != 'base' or cfg.DATALOADER.SYNC_FRAMES or
+                    cfg.DATALOADER.TIE_AUGMENTATION or cfg.MODEL.DIST_TRAIN or
+                    any((cfg.SOLVER.TEXT_LOSS_WEIGHT, cfg.SOLVER.TWIN_LOSS_WEIGHT,
+                         cfg.SOLVER.TNCE_WEIGHT))):
+                raise ValueError('M2-2 must run independently with the original single-GPU CE/Triplet path')
+            if (cfg.M2.SUMMARY_STOP_GRAD or not cfg.M2.TEXT_TARGET_STOP_GRAD or
+                    not cfg.M2.FREEZE_VISUAL_PROJECTION):
+                raise ValueError('M2-2 requires attached summaries, detached xit targets and frozen P0')
+            if self.base.clip_proj is None:
+                raise ValueError('M2-2 requires vit_base_clip')
+            self.base.clip_proj.requires_grad_(False)
+            if os.path.abspath(cfg.MODEL.PRETRAIN_PATH) != os.path.abspath(cfg.M2.CLIP_PATH) or cfg.MODEL.PRETRAIN_CHOICE != 'imagenet':
+                raise ValueError('M2-2 student must start from the same original CLIP weights as the text tower')
             from .backbones.clip_text import CLIPTextEncoder
-            clip_sd = _read_clip_checkpoint(clip_path)
-            self.m2_text = CLIPTextEncoder()
-            self.m2_text.load_clip(clip_sd)
-            self.m2_inverter = TrajectoryInverter(self.m2_text, width=int(m2_cfg.SUMMARY_WIDTH), n_words=int(m2_cfg.PSEUDO_TOKENS))
-            center_path = str(getattr(m2_cfg, 'RGB_CENTERS', ''))
-            if not center_path:
-                raise ValueError('M2-2 requires M2.RGB_CENTERS')
-            if center_path:
-                obj = torch.load(center_path, map_location='cpu', weights_only=False)
-                centers = obj['centers'] if isinstance(obj, dict) else obj
-                if centers.ndim != 2 or centers.shape[1] != 512:
-                    raise ValueError('M2 RGB centers must have shape [num_classes,512]')
-                if isinstance(obj, dict) and 'pids' in obj:
-                    pids = torch.as_tensor(obj['pids']).long().sort().values
-                    expected = torch.arange(centers.shape[0], dtype=torch.long)
-                    if not torch.equal(pids.cpu(), expected):
-                        raise ValueError('M2 RGB centers pids must be contiguous 0..N-1')
-                self.register_buffer('m2_rgb_centers', torch.nn.functional.normalize(centers.float(), dim=1))
-            else:
-                self.register_buffer('m2_rgb_centers', torch.empty(0, 512), persistent=False)
-            print('M2-2 trajectory text inversion enabled: width {}, four pseudo-words'.format(m2_cfg.SUMMARY_WIDTH))
+            from utils.m2_artifacts import validate_centers, weight_id
+            # Preserve the main training RNG stream after original backbone/head init.
+            with torch.random.fork_rng(devices=[]):
+                self.m2_text = CLIPTextEncoder()
+                self.m2_text.load_clip(_read_clip_checkpoint(cfg.M2.CLIP_PATH))
+                self.m2_inverter = TrajectoryInverter(self.m2_text, width=int(m2_cfg.SUMMARY_WIDTH), n_words=int(m2_cfg.PSEUDO_TOKENS))
+            obj = torch.load(cfg.M2.RGB_CENTERS, map_location='cpu', weights_only=False)
+            centers, meta = validate_centers(obj, cfg, num_classes)
+            self.register_buffer('m2_rgb_centers', torch.nn.functional.normalize(centers, dim=1))
+            self.m2_metadata = {'variant': self.m2_variant,
+                                'base_commit': 'a8349abeb5fb62b5f7d233e33202d1ef1d113b42',
+                                'implementation': 'm2-2-audit-v2',
+                                'acceleration_mix': 0.0, 'summary_width': int(m2_cfg.SUMMARY_WIDTH),
+                                'pseudo_tokens': int(m2_cfg.PSEUDO_TOKENS),
+                                'slots': self.m2_inverter.slot_ids.tolist(),
+                                'eot': self.m2_inverter.eot_index,
+                                'rgb_center_sha256': weight_id(cfg.M2.RGB_CENTERS),
+                                'teacher': meta, 'config': cfg.dump()}
+            print('M2-2 enabled: 11 attached summaries, four pseudo-words; frozen P0/text/RGB centers')
 
         # ---- fixed VPR text direction -------------------------------------
         # These are literal sentences encoded once.  No prompt parameter is
@@ -457,6 +478,12 @@ class build_transformer(nn.Module):
                     else torch.zeros_like(rows))
         return rows, is_aerial, modality
 
+    def train(self, mode=True):
+        super().train(mode)
+        if self.m2_text is not None:
+            self.m2_text.eval()
+        return self
+
     def forward(self, x=None, label=None, camids=None, mode=0):
         if mode==0:
             imgs = list(x)
@@ -530,8 +557,8 @@ class build_transformer(nn.Module):
                     'text': self.m2_text,
                     'inverter': self.m2_inverter,
                     'rgb_centers': self.m2_rgb_centers,
-                    'ground_temperature': float(m2_cfg.GROUND_TEMPERATURE),
-                    'xit_temperature': float(m2_cfg.CROSS_TEMPERATURE),
+                    'ground_temperature': self.m2_ground_temperature,
+                    'xit_temperature': self.m2_xit_temperature,
                 }
 
             if not self.text_align or camids is None:
@@ -611,7 +638,13 @@ class build_transformer(nn.Module):
         first tensor, and a *partially* matching one loaded whatever fit and
         left the rest at random init without a word.
         """
-        param_dict = torch.load(trained_path, map_location='cpu')
+        param_dict = torch.load(trained_path, map_location='cpu', weights_only=False)
+        meta = param_dict.get('metadata', {})
+        if meta.get('variant') == 'trajectory_text_inversion':
+            if (self.base.token_trajectory is None or
+                    not isinstance(self.base.token_trajectory, DenseCrossLayerTokenTrajectory) or
+                    self.base.token_trajectory.acceleration_mix != meta['acceleration_mix']):
+                raise ValueError('M2-2 checkpoint requires the trained velocity-only dense C0 settings')
         if 'state_dict' in param_dict:
             param_dict = param_dict['state_dict']
         own = self.state_dict()
@@ -628,6 +661,11 @@ class build_transformer(nn.Module):
                 raise ValueError('Trajectory checkpoint/config mismatch: use the '
                                  'same variant and settings as training')
 
+        if meta.get('variant') == 'trajectory_text_inversion':
+            checkpoint_keys = {k.replace('module.', '') for k in param_dict}
+            required_keys = {k for k in own if k.startswith(('base.', 'bottleneck.'))}
+            if not required_keys.issubset(checkpoint_keys):
+                raise ValueError('M2-2 checkpoint is missing trained student backbone/BN tensors')
         loaded, skipped, unexpected, mismatched = 0, [], [], []
         for k, v in param_dict.items():
             key = k.replace('module.', '')
@@ -643,6 +681,8 @@ class build_transformer(nn.Module):
             own[key].copy_(v)
             loaded += 1
 
+        if meta.get('variant') == 'trajectory_text_inversion' and mismatched:
+            raise ValueError('M2-2 student checkpoint shape mismatch: {}'.format(mismatched))
         missing = [k for k in own if k not in {x.replace('module.', '') for x in param_dict}]
         print('Loading pretrained model from {}'.format(trained_path))
         print('  loaded {} / {} tensors | {} classifier rows skipped (identity counts differ)'
@@ -675,8 +715,3 @@ def make_model(cfg, num_class, camera_num, view_num):
     model = build_transformer(num_class, camera_num, view_num, cfg, __factory_T_type)
     print('===========building transformer===========')
     return model
-
-
-
-
-

@@ -10,7 +10,8 @@ class TrajectoryInverter(nn.Module):
         super().__init__()
         if n_words != 4:
             raise ValueError('M2-2 defines exactly four pseudo-words')
-        self.text = text_encoder
+        # Keep one registered owner of the frozen text tower (the parent model).
+        object.__setattr__(self, 'text', text_encoder)
         self.n_words = n_words
         self.in_proj = nn.Linear(2304, width)
         self.norm = nn.LayerNorm(width)
@@ -34,11 +35,11 @@ class TrajectoryInverter(nn.Module):
         self.register_buffer('slot_ids', torch.tensor(slots).long(), persistent=False)
         self.eot_index = len(ids) - 1
         with torch.no_grad():
-            self.x_embedding = text_encoder.token_embedding.weight[tok.encode(PLACEHOLDER)[0]].detach().clone()
+            self.register_buffer('x_embedding', text_encoder.token_embedding.weight[tok.encode(PLACEHOLDER)[0]].detach().clone(), persistent=False)
 
     def forward(self, summary):
         # [N,11,2304] -> [N,4,512], with attention over depth only.
-        h = self.norm(torch.nn.functional.gelu(self.in_proj(summary)) + self.layer_code[None])
+        h = self.norm(torch.nn.functional.gelu(self.in_proj(summary.float()))) + self.layer_code[None]
         attn = torch.softmax(torch.einsum('kw,nlw->nkl', self.query, h) / math.sqrt(h.shape[-1]), dim=-1)
         pooled = torch.einsum('nkl,nlw->nkw', attn, h)
         words = self.x_embedding[None, None] + self.word(pooled)

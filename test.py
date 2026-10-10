@@ -33,6 +33,9 @@ if __name__ == "__main__":
     if args.config_file != "":
         cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+    # M2-2 deployment is the original C0 architecture; no teacher artifacts.
+    if cfg.M2.VARIANT == "trajectory_text_inversion":
+        cfg.M2.ENABLED = False
     cfg.freeze()
 
     setup_cuda_visible_devices(cfg)
