@@ -383,8 +383,14 @@ def do_train(cfg,
     text_weight = cfg.SOLVER.TEXT_LOSS_WEIGHT if cfg.MODEL.TEXT_ALIGN else 0.0
     m2_bank = None
     if bool(cfg.M2.ENABLED) and cfg.M2.VARIANT == 'condition_text_bridge':
+        if cfg.MODEL.PRETRAIN_CHOICE != 'imagenet':
+            raise ValueError('M2-1 main training starts from original CLIP; use M2.RESUME for full-state restore')
         from model.m2.condition_bridge import load_text_bank
-        m2_bank = load_text_bank(cfg.M2.TEXT_BANK, device=device)
+        model_meta = model.module if hasattr(model, 'module') else model
+        m2_bank = load_text_bank(cfg.M2.TEXT_BANK, cfg, model_meta.num_classes, device=device)
+        from utils.m1_checkpoint import attach_metadata
+        attach_metadata(model_meta, cfg, m2_bank)
+        logger.info('M2-1 observed prototypes per train ID=%s', torch.bincount(m2_bank['pid']).cpu().tolist())
     last_text_stats = None
 
     meter_vpr_text = AverageMeter()
@@ -468,7 +474,13 @@ def do_train(cfg,
 
     group_size = cfg.DATALOADER.NUM_INSTANCE
 
-    for epoch in range(1, epochs + 1):
+    m1_iterations = m1_updates = m1_amp_skips = 0
+    start_epoch = 1
+    if m2_bank is not None and cfg.M2.RESUME:
+        from utils.m1_checkpoint import restore_training
+        start_epoch, m1_iterations, m1_updates, m1_amp_skips = restore_training(
+            cfg.M2.RESUME, model_meta, optimizer, scheduler, scaler)
+    for epoch in range(start_epoch, epochs + 1):
         start_time = time.time()
         loss_meter.reset()
         acc_meter.reset()
@@ -523,12 +535,14 @@ def do_train(cfg,
                                        target_ce=target_ce)
                 if m2_bank is not None:
                     from model.m2.condition_bridge import condition_bridge_loss
-                    z = global_feat.float() @ model_meta.base.clip_proj.float()
-                    mods = torch.cat([torch.full_like(target, k) for k in range(num_modalities)])
-                    m2_loss, _ = condition_bridge_loss(z, target_rep, mods, m2_bank,
-                        temperature=float(cfg.M2.TEMPERATURE),
-                        all_weight=float(cfg.M2.TEXT_ALL_WEIGHT),
-                        cross_weight=float(cfg.M2.TEXT_CROSS_WEIGHT))
+                    with amp.autocast(enabled=False):
+                        z = global_feat.float() @ model_meta.base.clip_proj.float()
+                        mods = torch.cat([torch.full_like(target, k) for k in range(num_modalities)])
+                        m2_loss, m1_stats = condition_bridge_loss(z, target_rep, mods, m2_bank,
+                            temperature=float(cfg.M2.TEMPERATURE),
+                            cross_temperature=float(cfg.M2.CROSS_TEMPERATURE),
+                            all_weight=float(cfg.M2.TEXT_ALL_WEIGHT),
+                            cross_weight=float(cfg.M2.TEXT_CROSS_WEIGHT))
                     loss = loss + m2_loss
                 vpr_aux_total = loss.new_zeros(())
 
@@ -628,8 +642,19 @@ def do_train(cfg,
                 display_loss = total_loss.detach()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
+            if m2_bank is not None:
+                m1_iterations += 1
+                if scaler.get_scale() >= scale_before:
+                    m1_updates += 1
+                else:
+                    m1_amp_skips += 1
+                if n_iter % max(1, len(train_loader) // 10) == 0:
+                    logger.info('M2-1 all=%.6f cross=%.6f cross_valid=%s accuracy_RGB_IR_Thermal=%s prototype_contributions(input_mod,target_mod,platform)=%s',
+                        m1_stats['all'].item(), m1_stats['cross'].item(), m1_stats['valid'],
+                        m1_stats['accuracy_by_modality'].cpu().tolist(), m1_stats['prototype_contributions'].cpu().tolist())
 
             if use_aux_modules:
                 with torch.no_grad():
@@ -813,7 +838,9 @@ def do_train(cfg,
                 )
             )
 
-        if epoch % checkpoint_period == 0:
+        if m2_bank is not None:
+            logger.info('M2-1 cumulative iterations=%s optimizer_updates=%s AMP_skips=%s', m1_iterations, m1_updates, m1_amp_skips)
+        if epoch % checkpoint_period == 0 and m2_bank is None:
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
                     torch.save(model.state_dict(), os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
@@ -853,6 +880,11 @@ def do_train(cfg,
                 for r in (1, 5, 10):
                     logger.info(f'CMC curve, Rank-{r:<2}: {cmc[r-1]:.2%}')
             torch.cuda.empty_cache()
+        if epoch % checkpoint_period == 0 and m2_bank is not None:
+            # Capture RNG after validation loaders as well, at the epoch boundary.
+            from utils.m1_checkpoint import save_training
+            save_training(cfg.OUTPUT_DIR, cfg.MODEL.NAME, epoch, model_meta, optimizer,
+                          scheduler, scaler, m1_iterations, m1_updates, m1_amp_skips)
 
 
 def do_inference(cfg,

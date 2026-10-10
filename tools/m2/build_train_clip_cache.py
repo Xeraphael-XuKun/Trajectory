@@ -1,27 +1,24 @@
-"""Validate and package a train-only CLIP feature cache for M2-1."""
+"""核验缓存实际 train 来源；无法补造旧缓存缺失的来源。"""
 import argparse
+import os
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import torch
-
+from utils.m1_artifacts import validate_cache
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--input', required=True)
-    ap.add_argument('--output', required=True)
-    a = ap.parse_args()
-    x = torch.load(a.input, map_location='cpu', weights_only=False)
-    for k in ('feature', 'pid', 'modality', 'platform'):
-        if k not in x:
-            raise ValueError('cache missing ' + k)
-    if len(x['feature']) != len(x['pid']) or len(x['pid']) != len(x['modality']):
-        raise ValueError('cache lengths differ')
-    if x['pid'].min() < 0 or x['modality'].min() < 0 or x['modality'].max() > 2:
-        raise ValueError('invalid train mapping')
-    out = dict(x)
-    for k in ('feature', 'pid', 'modality', 'platform'):
-        if hasattr(out[k], 'cpu'):
-            out[k] = out[k].cpu()
-    torch.save(out, a.output)
-
+    parser = argparse.ArgumentParser()
+    for key in ('input', 'data-root', 'clip'):
+        parser.add_argument('--' + key, required=True)
+    parser.add_argument('--subdir', default='WHU-MARS')
+    parser.add_argument('--output')
+    args = parser.parse_args()
+    cache = torch.load(args.input, map_location='cpu', weights_only=False)
+    validate_cache(cache, args.data_root, args.subdir, args.clip)
+    if args.output and os.path.abspath(args.output) != os.path.abspath(args.input):
+        torch.save(cache, args.output)
+    print('缓存实际 train 来源核验通过')
 
 if __name__ == '__main__':
     main()

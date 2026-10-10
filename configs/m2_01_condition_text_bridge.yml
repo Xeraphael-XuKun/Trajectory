@@ -1,5 +1,4 @@
-# C0: Velocity-only control.
-# Fixed llmpar + CLIP normalization; inherits L_C_T training settings; VTC off.
+# M2-1 完整配置：原 velocity-only dense C0 加固定条件文本监督。
 
 MODEL:
   PRETRAIN_CHOICE: 'imagenet'
@@ -19,10 +18,14 @@ MODEL:
   PE_FREEZE_BASE: False
 
   TEXT_ALIGN: False
-  TEXT_CLIP_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
-  TEXT_N_CTX: 4
-  TEXT_MODALITY: 'RGB'
-  TEXT_TEMPLATE: 'a photo of a X view person with X X X X .'
+  VPR: False
+  MOD_DELTA: False
+  CE_SPLIT_VIEW: False
+  CE_SPLIT_MODALITY: False
+  SIE_CAMERA: False
+  SIE_VIEW: False
+  DIST_TRAIN: False
+  PE_TYPE: 'learnable'
 
 INPUT:
   SIZE_TRAIN: [256, 128]
@@ -38,11 +41,15 @@ DATASETS:
   ROOT_DIR: ('/mnt/cache/wanghanzhi/Datasets')
   MODALITIES: ['RGB', 'IR', 'Thermal']
   AERIAL_CAMS: [5, 6]
+  PROTOCOL: 'ALL'
+  SUBDIR: 'WHU-MARS'
 
 DATALOADER:
   SAMPLER: 'PKM'
   NUM_INSTANCE: 4
   NUM_WORKERS: 8
+  SYNC_FRAMES: False
+  TIE_AUGMENTATION: False
 
 SOLVER:
   OPTIMIZER_NAME: 'Adam'
@@ -64,16 +71,43 @@ SOLVER:
   LOSS_TYPE: 'base'
   PE_DELTA_LR_MULT: 1.0
   TEXT_LOSS_WEIGHT: 0.0
+  TWIN_LOSS_WEIGHT: 0.0
+  TNCE_WEIGHT: 0.0
+  MOD_DELTA_ONLY: False
 
 M2:
   ENABLED: True
   VARIANT: 'condition_text_bridge'
+  CLIP_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
+  FEATURE_CACHE: '/mnt/cache/wanghanzhi/XK/m2-a/artifacts/train_clip_features.pt'
+  ID_PROMPT_WEIGHT: '/mnt/cache/wanghanzhi/XK/m2-a/artifacts/condition_prompts_final.pt'
   TEXT_BANK: '/mnt/cache/wanghanzhi/XK/m2-a/artifacts/condition_text_bank.pt'
   TEMPERATURE: 0.07
   TEXT_ALL_WEIGHT: 0.5
   TEXT_CROSS_WEIGHT: 0.5
   FREEZE_VISUAL_PROJECTION: True
+  CROSS_TEMPERATURE: 0.07
+  ID_CONTEXT_LENGTH: 4
+  MODALITY_CONTEXT_LENGTH: 2
+  PLATFORM_CONTEXT_LENGTH: 2
+
+PROMPT_STAGE:
+  MAX_UPDATES: 10000
+  IDENTITIES_PER_STEP: 16
+  IMAGES_PER_ID: 4
+  CONDITION_BALANCED: True
+  LEARNING_RATE: 0.00035
+  WEIGHT_DECAY: 0.0001
+  WARMUP_UPDATES: 100
+  TEMPERATURE: 0.07
+
 TEST:
+  EVAL: True
+  IMS_PER_BATCH: 1024
+  FEAT_NORM: 'yes'
+  METRIC: 'sysu'
+  RE_RANKING: False
+  TOP_K_EVAL: 0
   NECK_FEAT: 'after'
 OUTPUT_DIR: '/mnt/cache/wanghanzhi/XK/m2-a/logs/student'
 

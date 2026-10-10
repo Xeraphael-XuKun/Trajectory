@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 from .backbones.vit_pytorch import vit_base_in, vit_base_clip, vit_ics_lup
@@ -175,15 +176,27 @@ class build_transformer(nn.Module):
             # and it is safe to do here, before the heads exist.
             self.base.load_param(model_path)
             print('Loading pretrained model......from {}'.format(model_path))
-        # M2 text losses use the original CLIP visual projection as a fixed
-        # coordinate system. Freeze it explicitly while retaining its input
-        # gradient to the ReID feature.
-        m2_cfg = getattr(cfg, 'M2', None)
-        if (m2_cfg is not None and bool(m2_cfg.ENABLED)
-                and str(m2_cfg.VARIANT) != 'none'
-                and bool(getattr(m2_cfg, 'FREEZE_VISUAL_PROJECTION', True))):
-            if getattr(self.base, 'clip_proj', None) is None:
-                raise ValueError('M2 text losses require vit_base_clip/clip_proj')
+        self.m1_active = bool(cfg.M2.ENABLED and cfg.M2.VARIANT == 'condition_text_bridge')
+        if cfg.M2.ENABLED and not self.m1_active:
+            raise ValueError('this worktree implements only M2-1 condition_text_bridge')
+        if self.m1_active:
+            if (not self.use_token_trajectory or cfg.MODEL.TOKEN_TRAJECTORY_VARIANT != 'dense' or
+                    cfg.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX != 0.0 or
+                    not cfg.M2.FREEZE_VISUAL_PROJECTION or getattr(self.base, 'clip_proj', None) is None):
+                raise ValueError('M2-1 first launch requires velocity-only dense C0 and frozen P0')
+            if (cfg.MODEL.TEXT_ALIGN or cfg.MODEL.VPR or cfg.MODEL.MOD_DELTA or
+                    cfg.MODEL.CE_SPLIT_VIEW or cfg.MODEL.CE_SPLIT_MODALITY or cfg.MODEL.SIE_CAMERA or
+                    cfg.MODEL.SIE_VIEW or cfg.MODEL.PE_FREEZE_BASE or cfg.MODEL.PE_TYPE != 'learnable' or
+                    cfg.MODEL.DIST_TRAIN or cfg.SOLVER.LOSS_TYPE != 'base' or cfg.MODEL.IF_LABELSMOOTH != 'off' or
+                    cfg.DATALOADER.SYNC_FRAMES or cfg.DATALOADER.TIE_AUGMENTATION or
+                    any((cfg.SOLVER.TEXT_LOSS_WEIGHT, cfg.SOLVER.TWIN_LOSS_WEIGHT, cfg.SOLVER.TNCE_WEIGHT))):
+                raise ValueError('M2-1 must retain the independent original CE/Triplet training chain')
+            if (cfg.M2.ID_CONTEXT_LENGTH, cfg.M2.MODALITY_CONTEXT_LENGTH, cfg.M2.PLATFORM_CONTEXT_LENGTH) != (4, 2, 2):
+                raise ValueError('M2-1 requires 4/2/2 prompt tokens')
+            if list(cfg.DATASETS.MODALITIES) != ['RGB', 'IR', 'Thermal'] or list(cfg.DATASETS.AERIAL_CAMS) != [5, 6]:
+                raise ValueError('M2-1 modality/camera correspondence differs')
+            if pretrain_choice == 'imagenet' and os.path.abspath(model_path) != os.path.abspath(cfg.M2.CLIP_PATH):
+                raise ValueError('M2-1 student and teacher must use the same original CLIP')
             self.base.clip_proj.requires_grad_(False)
 
         elif pretrain_choice == 'no':
@@ -564,10 +577,25 @@ class build_transformer(nn.Module):
         first tensor, and a *partially* matching one loaded whatever fit and
         left the rest at random init without a word.
         """
-        param_dict = torch.load(trained_path, map_location='cpu')
+        param_dict = torch.load(trained_path, map_location='cpu', weights_only=False)
+        metadata = param_dict.get('metadata', {})
         if 'state_dict' in param_dict:
             param_dict = param_dict['state_dict']
         own = self.state_dict()
+        if metadata.get('variant') == 'condition_text_bridge':
+            trajectory = self.base.token_trajectory
+            expected = metadata['student']
+            if (trajectory is None or self.base.token_trajectory_variant != expected['trajectory_variant'] or
+                    trajectory.acceleration_mix != expected['acceleration_mix'] or
+                    list(trajectory.gain.shape) != expected['gain_shape']):
+                raise ValueError('M2-1 deployment C0 settings differ from the trained model')
+            required = {key for key in own if key.startswith(('base.', 'bottleneck.'))}
+            keys = {key.replace('module.', '') for key in param_dict}
+            if not required.issubset(keys):
+                raise ValueError('M2-1 checkpoint is missing trained visual tensors')
+            self.m1_metadata = metadata
+        elif self.m1_active:
+            raise ValueError('M2-1 checkpoint requires method metadata')
 
         # Preserve old baseline/dense loading, but never silently evaluate a
         # new variant checkpoint with another variant or its default settings.
@@ -596,6 +624,8 @@ class build_transformer(nn.Module):
             own[key].copy_(v)
             loaded += 1
 
+        if metadata.get('variant') == 'condition_text_bridge' and mismatched:
+            raise ValueError('M2-1 deployment tensor shape mismatch: {}'.format(mismatched))
         missing = [k for k in own if k not in {x.replace('module.', '') for x in param_dict}]
         print('Loading pretrained model from {}'.format(trained_path))
         print('  loaded {} / {} tensors | {} classifier rows skipped (identity counts differ)'
