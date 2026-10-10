@@ -32,6 +32,7 @@ import collections.abc as container_abcs
 from .chartpe import ChartRotaryEmbedding, TopologyPreservingChart, build_centered_grid
 from .token_trajectory import DenseCrossLayerTokenTrajectory
 from .token_trajectory_variants import TrajectoryVariant
+from .token_trajectory_round5 import ROUND5_VARIANTS, Round5VelocityTrajectory
 from .vpr import ViewAwarePositionalResidual
 
 
@@ -483,7 +484,9 @@ class TransReID(nn.Module):
             from .token_trajectory_refinements import TrajectoryRefinement
             from .token_trajectory_structure import StructuredTokenTrajectory
             from .token_trajectory_combinations import GatedTrajectoryCombination, SparseVelocityTrajectory
-            if token_trajectory_variant in COMBINATION_VARIANTS:
+            if token_trajectory_variant in ROUND5_VARIANTS:
+                trajectory_class = Round5VelocityTrajectory
+            elif token_trajectory_variant in COMBINATION_VARIANTS:
                 trajectory_class = GatedTrajectoryCombination
             elif token_trajectory_variant in SPARSE_VARIANTS:
                 trajectory_class = SparseVelocityTrajectory
@@ -620,6 +623,23 @@ class TransReID(nn.Module):
             1, int(grid_h) * int(grid_w), -1)
         return torch.cat([cls_pos.to(dtype=dtype), patch_pos], dim=1)
 
+    def _forward_round5_tokens(self, x, chart=None, trajectory_gate=None):
+        """E1: observe raw block velocity BEFORE removing this block's correction."""
+        previous_velocity = None
+        for i, block in enumerate(self.blocks):
+            correction = None
+            if previous_velocity is not None:
+                correction = self.token_trajectory(
+                    i, previous_velocity, gate=trajectory_gate)
+                x = x + correction
+            actual_input = x
+            raw_output = block(actual_input, chart=chart)
+            previous_velocity = raw_output - actual_input
+            # The same gated correction is removed, including after block12.
+            # No detach or in-place write: the identity gradient must cancel.
+            x = raw_output if correction is None else raw_output - correction
+        return x
+
     def forward_features(self, x, camera_id, modal_id, view_id, delta_gate=None,
                          vpr_gate=None, trajectory_gate=None, c0_probe_layers=()):
         """delta_gate: None, or [B] / [B,1,1] scaling the layer-wise increments
@@ -685,6 +705,15 @@ class TransReID(nn.Module):
                                                   int(modal_id.max()), n_mod))
             mod_idx = (modal_id - 1).clamp_min(0)
             mod_keep = (modal_id > 0).to(x.dtype).reshape(-1, 1, 1)
+
+        if (self.token_trajectory is not None and
+                self.token_trajectory_variant in ROUND5_VARIANTS):
+            if (deltas is not None or self.mod_delta is not None or
+                    self.vpr is not None or c0_probe_layers or chart is not None):
+                raise ValueError('E1 requires the original PE path without other actuators/probes')
+            x = self._forward_round5_tokens(x, chart=chart,
+                                            trajectory_gate=trajectory_gate)
+            return self.norm(x)[:, 0]
 
         previous_velocity = None
         previous_previous_velocity = None

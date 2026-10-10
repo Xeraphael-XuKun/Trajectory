@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .token_trajectory import DenseCrossLayerTokenTrajectory
+from .token_trajectory_round5 import ROUND5_VARIANTS
 
 
 VARIANT_CODES = {'adaptive': 1, 'split': 2, 'ema': 3,
@@ -21,14 +22,16 @@ def validate_trajectory_config(cfg):
     """Reject silently ignored knobs or mixed actuators in this experiment set."""
     variant = cfg.MODEL.TOKEN_TRAJECTORY_VARIANT
     if variant not in (('dense',) + tuple(VARIANT_CODES) + REFINEMENT_VARIANTS +
-                       STRUCTURE_VARIANTS + COMBINATION_VARIANTS + SPARSE_VARIANTS):
+                       STRUCTURE_VARIANTS + COMBINATION_VARIANTS + SPARSE_VARIANTS +
+                       ROUND5_VARIANTS):
         raise ValueError('Unknown Trajectory variant: {}'.format(variant))
     if variant != 'dense':
         if not cfg.MODEL.TOKEN_TRAJECTORY:
             raise ValueError('A Trajectory variant requires TOKEN_TRAJECTORY=True')
         expected_mix = {'dense_half': 0.5, 'velocity_gate': 0.0,
                         'attention_velocity': 0.0, 'mlp_velocity': 0.0,
-                        'velocity_cross_depth': 0.0, 'velocity_late_depth': 0.0}.get(variant, 1.0)
+                        'velocity_cross_depth': 0.0, 'velocity_late_depth': 0.0,
+                        'velocity_transient': 0.0}.get(variant, 1.0)
         if cfg.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX != expected_mix:
             raise ValueError('{} requires ACCEL_MIX={}'.format(variant, expected_mix))
         if cfg.MODEL.VPR or cfg.MODEL.MOD_DELTA or cfg.MODEL.TEXT_ALIGN:
@@ -41,6 +44,32 @@ def validate_trajectory_config(cfg):
                   if owner == 'token_gate' else (owner,))
         if variant not in owners and getattr(cfg.MODEL, key) != default:
             raise ValueError('{} only affects variant {}'.format(key, owner))
+    if variant in ROUND5_VARIANTS:
+        requirements = (
+            (cfg.MODEL, 'PE_TYPE', 'learnable'),
+            (cfg.MODEL, 'PE_LAYERWISE', 'none'),
+            (cfg.MODEL, 'PE_FREEZE_BASE', False),
+            (cfg.MODEL, 'LAYER_SCALE', False),
+            (cfg.MODEL, 'SIE_CAMERA', False),
+            (cfg.MODEL, 'SIE_VIEW', False),
+            (cfg.MODEL, 'CE_SPLIT_VIEW', False),
+            (cfg.MODEL, 'CE_SPLIT_MODALITY', False),
+            (cfg.MODEL, 'DIST_TRAIN', False),
+            (cfg.MODEL, 'DROP_OUT', 0.0),
+            (cfg.MODEL, 'ATT_DROP_RATE', 0.0),
+            (cfg.C0_AUX, 'ENABLED', False),
+            (cfg.TERMINAL_REPAIR, 'ENABLED', False),
+            (cfg.SOLVER, 'LOSS_TYPE', 'base'),
+            (cfg.SOLVER, 'TEXT_LOSS_WEIGHT', 0.0),
+            (cfg.SOLVER, 'TWIN_LOSS_WEIGHT', 0.0),
+            (cfg.SOLVER, 'TNCE_WEIGHT', 0.0),
+            (cfg.SOLVER, 'MOD_DELTA_ONLY', False),
+            (cfg.DATALOADER, 'SYNC_FRAMES', False),
+            (cfg.DATALOADER, 'TIE_AUGMENTATION', False),
+        )
+        for node, key, expected in requirements:
+            if getattr(node, key) != expected:
+                raise ValueError('E1 requires {}={}'.format(key, expected))
 
 
 class TrajectoryVariant(DenseCrossLayerTokenTrajectory):

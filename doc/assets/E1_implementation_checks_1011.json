@@ -1,0 +1,231 @@
+{
+  "date": "2026-10-11",
+  "branch": "codex/trajectory-e1",
+  "reference_commit": "48b6ba97a56292b3eb71374d81c713e742eb2075",
+  "E1_tests": {
+    "status": "PASSED",
+    "count": 30
+  },
+  "repository_tests": {
+    "status": "PASSED",
+    "count": 102,
+    "warnings": 6
+  },
+  "historical_regression": {
+    "status": "PASSED",
+    "comparison": "bitwise",
+    "device": "cpu",
+    "reference_root": "C:\\Users\\skrXukun\\.codex\\worktrees\\trajectory-e1\\Trajectory\\work\\reference_48b6ba9",
+    "candidate_root": "C:\\Users\\skrXukun\\.codex\\worktrees\\trajectory-e1\\Trajectory",
+    "checked_tensors": {
+      "baseline": 188,
+      "T0": 191,
+      "C0": 191,
+      "T1": 196,
+      "T2": 196,
+      "T4": 229,
+      "P3": 193,
+      "P4": 193
+    },
+    "formal_training": false
+  },
+  "real_clip_CPU": {
+    "status": "PASSED",
+    "device": "cpu",
+    "runtime": "Runtime: python=3.9.23, torch=2.2.1+cu118, torchvision=0.17.1+cu118, timm=1.0.19, torch_cuda=11.8, cudnn=8700, device=NVIDIA GeForce RTX 3050 Laptop GPU, cudnn_deterministic=False, cudnn_benchmark=False",
+    "python": "E:\\software\\Anaconda\\envs\\transformers\\python.exe",
+    "clip_path": "E:/CFAN/weights/ViT-B-16.pt",
+    "gain_shape": [
+      11,
+      1,
+      129,
+      768
+    ],
+    "parameters": 1089792,
+    "gain_lr": 0.00035,
+    "weight_decay": 0.0001,
+    "injection_sites": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "shared_initialization": "bitwise",
+    "initial_pre_post_output": "bitwise",
+    "formal_loader_roundtrip": "bitwise",
+    "signature": [
+      701.0,
+      1.0,
+      12.0,
+      129.0,
+      768.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0,
+      1e-05
+    ],
+    "input": "synthetic images",
+    "formal_training": false
+  },
+  "real_data_AMP": {
+    "status": "PASSED",
+    "checks": {
+      "steps_complete": true,
+      "all_gradients_finite": true,
+      "first_step_all_gain_rows_receive_gradient": true,
+      "gain_updates": true,
+      "one_bn_update_per_step": true
+    },
+    "runtime": "Runtime: python=3.9.23, torch=2.2.1+cu118, torchvision=0.17.1+cu118, timm=1.0.19, torch_cuda=11.8, cudnn=8700, device=NVIDIA GeForce RTX 3050 Laptop GPU, cudnn_deterministic=True, cudnn_benchmark=True",
+    "python": "E:\\software\\Anaconda\\envs\\transformers\\python.exe",
+    "config_file": "C:\\Users\\skrXukun\\.codex\\worktrees\\trajectory-e1\\Trajectory\\configs\\trajectory_E1_transient.yml",
+    "logical_batch": 8,
+    "actual_images": 24,
+    "amp_init_scale_smoke_only": 128.0,
+    "rows": [
+      {
+        "step": 1,
+        "ce": 6.219889163970947,
+        "triplet": 9.523420333862305,
+        "loss": 15.743309020996094,
+        "gain_grad_finite": true,
+        "gain_grad_norm_by_layer": [
+          31.43437385559082,
+          22.410926818847656,
+          7.98108434677124,
+          5.871072769165039,
+          6.669732093811035,
+          5.35717248916626,
+          5.2222208976745605,
+          4.099155426025391,
+          2.3962557315826416,
+          1.5220377445220947,
+          1.965831995010376
+        ],
+        "gain_lr": 3.5e-06,
+        "grad_norm": 598.6954956054688,
+        "grad_norm_finite": true,
+        "gain_changed": true,
+        "scale_before": 128.0,
+        "scale_after": 128.0,
+        "seconds": 0.9478986999999996
+      },
+      {
+        "step": 2,
+        "ce": 6.215494632720947,
+        "triplet": 12.585261344909668,
+        "loss": 18.800756454467773,
+        "gain_grad_finite": true,
+        "gain_grad_norm_by_layer": [
+          14.941293716430664,
+          15.226163864135742,
+          6.72129487991333,
+          5.610201358795166,
+          5.226126670837402,
+          5.920975208282471,
+          5.525636672973633,
+          3.8197522163391113,
+          4.246938228607178,
+          15.421442031860352,
+          4.207032203674316
+        ],
+        "gain_lr": 6.965e-06,
+        "grad_norm": 617.7534790039062,
+        "grad_norm_finite": true,
+        "gain_changed": true,
+        "scale_before": 128.0,
+        "scale_after": 128.0,
+        "seconds": 0.549414800000001
+      },
+      {
+        "step": 3,
+        "ce": 6.21875,
+        "triplet": 8.695676803588867,
+        "loss": 14.914426803588867,
+        "gain_grad_finite": true,
+        "gain_grad_norm_by_layer": [
+          16.416954040527344,
+          13.955517768859863,
+          6.652790069580078,
+          8.323400497436523,
+          7.644119739532471,
+          6.286776065826416,
+          8.219605445861816,
+          7.089349269866943,
+          3.745953321456909,
+          1.606207013130188,
+          1.5057412385940552
+        ],
+        "gain_lr": 1.043e-05,
+        "grad_norm": 580.4931030273438,
+        "grad_norm_finite": true,
+        "gain_changed": true,
+        "scale_before": 128.0,
+        "scale_after": 128.0,
+        "seconds": 0.4698013999999997
+      }
+    ],
+    "signature": [
+      701.0,
+      1.0,
+      12.0,
+      129.0,
+      768.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0,
+      1e-05
+    ],
+    "gain_nonzero": 1089792,
+    "peak_allocated_bytes": 3166673408,
+    "formal_training": false
+  },
+  "launcher": {
+    "status": "PASSED",
+    "bash_syntax": true,
+    "order": [
+      "runtime",
+      "train",
+      "post",
+      "pre"
+    ],
+    "formal_training": false
+  },
+  "failed_attempts": [
+    {
+      "status": "FAILED",
+      "output_dir": "work/E1_real_amp",
+      "amp_init_scale": 1024,
+      "detail": "Before smoke scheduler integration, step2 backbone grad_norm=Inf; gain gradients finite; GradScaler skipped step2 and reduced scale to512. Original smoke assertion failed."
+    },
+    {
+      "status": "FAILED",
+      "output_dir": "work/E1_real_amp_scale128",
+      "amp_init_scale": 128,
+      "detail": "Three AMP updates finite; smoke helper consumed a fourth CPU batch before break, causing CPU-input/CUDA-model inference mismatch. Fixed helper stop position and then reran final tool from scratch."
+    }
+  ],
+  "not_executed": [
+    "A800/llmpar runtime",
+    "formal192-image training batch",
+    "test batch1024 capacity",
+    "60epoch training",
+    "retrieval evaluation",
+    "query export",
+    "E2/E3 implementation"
+  ],
+  "formal_training": false,
+  "server_upload": false,
+  "github_push": false
+}
