@@ -76,7 +76,9 @@ if __name__ == '__main__':
     logger.info("Saving model in the path :{}".format(cfg.OUTPUT_DIR))
     logger.info(args)
     logger.info(runtime_summary())
-    if cfg.C0_AUX.ENABLED or cfg.TERMINAL_REPAIR.ENABLED:
+    if (cfg.C0_AUX.ENABLED or cfg.TERMINAL_REPAIR.ENABLED or
+            (cfg.MODEL.TOKEN_TRAJECTORY and
+             cfg.MODEL.TOKEN_TRAJECTORY_VARIANT == 'velocity_attn_transport')):
         with open(os.path.join(output_dir, 'config.yml'), 'w', encoding='utf-8') as handle:
             handle.write(cfg.dump())
 

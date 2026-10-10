@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from .backbones.vit_pytorch import vit_base_in, vit_base_clip, vit_ics_lup
 from .backbones.token_trajectory_variants import validate_trajectory_config
+from .backbones.token_trajectory_round5 import ROUND5_VARIANTS
 
 def weights_init_kaiming(m):
     classname = m.__class__.__name__
@@ -154,7 +155,14 @@ class build_transformer(nn.Module):
             print('Mod-delta: banks for {} (reference {} gets none), {:,} params'
                   .format(self.modalities[1:], self.modalities[0],
                           self.base.mod_delta.numel()))
-        if self.use_token_trajectory:
+        if self.use_token_trajectory and cfg.MODEL.TOKEN_TRAJECTORY_VARIANT in ROUND5_VARIANTS:
+            print('E2 velocity_attn_transport | detached previous attention | self=0.5 route=0.5 | {} sites'
+                  .format(self.base.token_trajectory.depth - 1))
+            print('Trajectory trainable parameters: {}'.format(
+                self.base.token_trajectory.trajectory_parameters))
+            print('Trajectory method signature: {}'.format(
+                self.base.token_trajectory.method_signature.tolist()))
+        elif self.use_token_trajectory:
             print('Dense Cross-layer Token Trajectory: accel_mix {}, {:,} params'
                   .format(cfg.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX,
                           self.base.token_trajectory.trajectory_parameters))
@@ -623,6 +631,19 @@ class build_transformer(nn.Module):
                     not torch.equal(signature.cpu(), expected.cpu())):
                 raise ValueError('Trajectory checkpoint/config mismatch: use the '
                                  'same variant and settings as training')
+
+        # Audit new checkpoints before copying any tensor. Historical loading
+        # and the separate base.load_param(CLIP) initialization stay unchanged.
+        if getattr(self.base, 'token_trajectory_variant', None) in ROUND5_VARIANTS:
+            normalized = {k[7:] if k.startswith('module.') else k: v
+                          for k, v in param_dict.items()}
+            required = {k: v for k, v in own.items() if 'classifier' not in k}
+            missing_required = [k for k in required if k not in normalized]
+            wrong_shapes = [k for k, v in required.items()
+                            if k in normalized and normalized[k].shape != v.shape]
+            if missing_required or wrong_shapes:
+                raise ValueError('Incomplete E2 checkpoint: missing {}; shape mismatch {}'
+                                 .format(missing_required, wrong_shapes))
 
         loaded, skipped, unexpected, mismatched = 0, [], [], []
         for k, v in param_dict.items():

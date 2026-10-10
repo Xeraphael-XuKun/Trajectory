@@ -32,6 +32,7 @@ import collections.abc as container_abcs
 from .chartpe import ChartRotaryEmbedding, TopologyPreservingChart, build_centered_grid
 from .token_trajectory import DenseCrossLayerTokenTrajectory
 from .token_trajectory_variants import TrajectoryVariant
+from .token_trajectory_round5 import ROUND5_VARIANTS, Round5VelocityTrajectory
 from .vpr import ViewAwarePositionalResidual
 
 
@@ -145,7 +146,7 @@ class Attention(nn.Module):
             head_dim, num_heads, theta=rope_theta, trainable=rope_freq_trainable,
             gate=rope_gate) if rope else None
 
-    def forward(self, x, chart=None):
+    def forward(self, x, chart=None, return_mean_attention=False):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
@@ -156,11 +157,17 @@ class Attention(nn.Module):
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
+        if return_mean_attention:
+            # Detached pre-dropout observation; keep the original path intact.
+            with torch.autocast(device_type=x.device.type, enabled=False):
+                mean_attention = attn.detach().float().mean(dim=1)
         attn = self.attn_drop(attn)
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
+        if return_mean_attention:
+            return x, mean_attention
         return x
 
 
@@ -190,8 +197,15 @@ class Block(nn.Module):
         else:
             self.gamma_1 = self.gamma_2 = None
 
-    def forward(self, x, chart=None, return_updates=False):
-        a = self.attn(self.norm1(x), chart=chart)
+    def forward(self, x, chart=None, return_updates=False,
+                return_mean_attention=False):
+        if return_updates and return_mean_attention:
+            raise ValueError('Request updates or mean attention, not both')
+        if return_mean_attention:
+            a, mean_attention = self.attn(
+                self.norm1(x), chart=chart, return_mean_attention=True)
+        else:
+            a = self.attn(self.norm1(x), chart=chart)
         attn_update = self.drop_path(a if self.gamma_1 is None else self.gamma_1 * a)
         m_in = x + attn_update
         m = self.mlp(self.norm2(m_in))
@@ -201,6 +215,8 @@ class Block(nn.Module):
             # Reuse the exact residuals applied above, including LayerScale and
             # each original DropPath draw. Never recompute either sublayer.
             return output, attn_update, mlp_update
+        if return_mean_attention:
+            return output, mean_attention
         return output
 
 
@@ -483,7 +499,9 @@ class TransReID(nn.Module):
             from .token_trajectory_refinements import TrajectoryRefinement
             from .token_trajectory_structure import StructuredTokenTrajectory
             from .token_trajectory_combinations import GatedTrajectoryCombination, SparseVelocityTrajectory
-            if token_trajectory_variant in COMBINATION_VARIANTS:
+            if token_trajectory_variant in ROUND5_VARIANTS:
+                trajectory_class = Round5VelocityTrajectory
+            elif token_trajectory_variant in COMBINATION_VARIANTS:
                 trajectory_class = GatedTrajectoryCombination
             elif token_trajectory_variant in SPARSE_VARIANTS:
                 trajectory_class = SparseVelocityTrajectory
@@ -620,6 +638,28 @@ class TransReID(nn.Module):
             1, int(grid_h) * int(grid_w), -1)
         return torch.cat([cls_pos.to(dtype=dtype), patch_pos], dim=1)
 
+    def _forward_round5_tokens(self, x, chart=None, trajectory_gate=None):
+        """E2: transport previous full velocity with previous detached attention."""
+        previous_velocity = None
+        previous_attention = None
+        for i, block in enumerate(self.blocks):
+            if previous_velocity is not None:
+                correction = self.token_trajectory(
+                    i, previous_velocity, gate=trajectory_gate,
+                    previous_attention=previous_attention)
+                x = x + correction
+            actual_input = x
+            # Block12 has no later consumer; don't extract its mean copy.
+            if i < len(self.blocks) - 1:
+                raw_output, previous_attention = block(
+                    actual_input, chart=chart, return_mean_attention=True)
+            else:
+                raw_output = block(actual_input, chart=chart)
+                previous_attention = None
+            previous_velocity = raw_output - actual_input
+            x = raw_output  # persistent correction; no transient removal
+        return x
+
     def forward_features(self, x, camera_id, modal_id, view_id, delta_gate=None,
                          vpr_gate=None, trajectory_gate=None, c0_probe_layers=()):
         """delta_gate: None, or [B] / [B,1,1] scaling the layer-wise increments
@@ -685,6 +725,15 @@ class TransReID(nn.Module):
                                                   int(modal_id.max()), n_mod))
             mod_idx = (modal_id - 1).clamp_min(0)
             mod_keep = (modal_id > 0).to(x.dtype).reshape(-1, 1, 1)
+
+        if (self.token_trajectory is not None and
+                self.token_trajectory_variant in ROUND5_VARIANTS):
+            if (deltas is not None or self.mod_delta is not None or
+                    self.vpr is not None or c0_probe_layers or chart is not None):
+                raise ValueError('E2 requires the original PE path without other actuators/probes')
+            x = self._forward_round5_tokens(x, chart=chart,
+                                            trajectory_gate=trajectory_gate)
+            return self.norm(x)[:, 0]
 
         previous_velocity = None
         previous_previous_velocity = None
