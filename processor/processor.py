@@ -406,6 +406,10 @@ def do_train(cfg,
                         else 0.0)
     deep_anchor_weight = float(cfg.M2.TEXT_ANCHOR_WEIGHT)
     last_text_stats = None
+    # M2-3 has identity/anchor metrics, not the legacy view-text schema.
+    meter_deep = AverageMeter()
+    meter_deep_it = AverageMeter()
+    meter_deep_anchor = AverageMeter()
 
     meter_vpr_text = AverageMeter()
     meter_vpr_csd = AverageMeter()
@@ -504,6 +508,9 @@ def do_train(cfg,
         for m in meter_ls:
             m.reset()
         meter_text.reset()
+        meter_deep.reset()
+        meter_deep_it.reset()
+        meter_deep_anchor.reset()
         meter_vpr_text.reset()
         meter_vpr_csd.reset()
         meter_twin.reset()
@@ -584,8 +591,9 @@ def do_train(cfg,
                         text_weight=deep_text_weight,
                         anchor_weight=deep_anchor_weight)
                     loss = loss + loss_deep
-                    meter_text.update(loss_deep.item(), aux['visual'].shape[0])
-                    last_text_stats = deep_stats
+                    meter_deep.update(loss_deep.item(), aux['visual'].shape[0])
+                    meter_deep_it.update(deep_stats['loss_it'].item(), aux['visual'].shape[0])
+                    meter_deep_anchor.update(deep_stats['loss_anchor'].item(), aux['text'].shape[0])
 
                 if twin_weight > 0:
                     per_modality = imgs[0].shape[0]
@@ -657,15 +665,14 @@ def do_train(cfg,
                 scaler.scale(total_loss).backward()
                 display_loss = total_loss.detach()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            if m3_active and n_iter % max(1, len(train_loader) // 10) == 0:
+            grad_norm_before_clip = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            log_m3_gradients = m3_active and n_iter % max(1, len(train_loader) // 10) == 0
+            if log_m3_gradients:
                 controller = model_meta.base.deep_c0_controller
                 stats = torch.stack(controller.last_stats).cpu().tolist()
                 drift = (controller.context.detach() - model_meta.deep_identity.context_init).norm().item()
                 grad = {key: (parameter.grad.norm().item() if parameter.grad is not None else 0.0)
                         for key, parameter in controller.named_parameters()}
-                logger.info('M2-3 per_layer(mean,std,min,max,R*/R)=%s context_drift=%.6g gradients=%s',
-                            stats, drift, grad)
             scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
@@ -675,6 +682,13 @@ def do_train(cfg,
                     m3_updates += 1
                 else:
                     m3_amp_skips += 1
+                if log_m3_gradients:
+                    logger.info(
+                        'M2-3 per_layer(mean,std,min,max,R*/R)=%s context_drift=%.6g '
+                        'gradients=%s grad_norm_before_clip=%.6g AMP_skipped=%s scale=%.6g->%.6g '
+                        'iterations=%s optimizer_updates=%s AMP_skips=%s',
+                        stats, drift, grad, grad_norm_before_clip.item(), scaler.get_scale() < scale_before,
+                        scale_before, scaler.get_scale(), m3_iterations, m3_updates, m3_amp_skips)
 
             if use_aux_modules:
                 with torch.no_grad():
@@ -764,6 +778,12 @@ def do_train(cfg,
                             last_vpr_csd_stats['n_valid'],
                             '  '.join('{}={:.4f}'.format(n, v) for n, v in
                                      zip(cfg.DATASETS.MODALITIES, vals))))
+                if meter_deep.count > 0:
+                    logger.info(
+                        'Epoch[{}] M2-3-text: weighted_loss={:.4f} '
+                        'identity_CE={:.4f} x {:.3g}; anchor={:.6f} x {:.3g}'.format(
+                            epoch, meter_deep.avg, meter_deep_it.avg, deep_text_weight,
+                            meter_deep_anchor.avg, deep_anchor_weight))
                 if last_text_stats is not None and 'acc_after' in last_text_stats:
                     s = last_text_stats
                     names = list(cfg.DATASETS.MODALITIES)
