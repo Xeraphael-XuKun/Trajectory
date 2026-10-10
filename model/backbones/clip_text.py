@@ -49,6 +49,7 @@ class ResidualAttentionBlock(nn.Module):
     def __init__(self, width, heads):
         super().__init__()
         self.attn = nn.MultiheadAttention(width, heads)
+        self.math_attention = False
         self.ln_1 = nn.LayerNorm(width)
         self.mlp = nn.Sequential(
             nn.Linear(width, width * 4), QuickGELU(), nn.Linear(width * 4, width))
@@ -56,7 +57,7 @@ class ResidualAttentionBlock(nn.Module):
 
     def forward(self, x, attn_mask):
         h = self.ln_1(x)
-        x = x + self.attn(h, h, h, need_weights=False, attn_mask=attn_mask)[0]
+        x = x + self.attn(h, h, h, need_weights=self.math_attention, attn_mask=attn_mask)[0]
         return x + self.mlp(self.ln_2(x))
 
 
