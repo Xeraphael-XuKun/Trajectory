@@ -1,0 +1,253 @@
+{
+  "date": "2026-10-11",
+  "variant": "velocity_uniform_transport",
+  "base_commit": "48b6ba97a56292b3eb71374d81c713e742eb2075",
+  "branch": "codex/trajectory-e3",
+  "formal_training": false,
+  "new_checks": {
+    "passed": 34,
+    "all_repository_checks_passed": 106,
+    "historical_deprecation_warnings": 6
+  },
+  "historical_regression": {
+    "status": "PASSED",
+    "comparison": "bitwise",
+    "device": "cpu",
+    "reference_root": "C:\\Users\\skrXukun\\.codex\\worktrees\\trajectory-e1\\Trajectory\\work\\reference_48b6ba9",
+    "candidate_root": "C:\\Users\\skrXukun\\.codex\\worktrees\\trajectory-e3\\Trajectory",
+    "checked_tensors": {
+      "baseline": 188,
+      "T0": 191,
+      "C0": 191,
+      "T1": 196,
+      "T2": 196,
+      "T4": 229,
+      "P3": 193,
+      "P4": 193
+    },
+    "formal_training": false
+  },
+  "real_clip_cpu": {
+    "status": "PASSED",
+    "device": "cpu",
+    "runtime": "Runtime: python=3.9.23, torch=2.2.1+cu118, torchvision=0.17.1+cu118, timm=1.0.19, torch_cuda=11.8, cudnn=8700, device=NVIDIA GeForce RTX 3050 Laptop GPU, cudnn_deterministic=False, cudnn_benchmark=False",
+    "python": "E:\\software\\Anaconda\\envs\\transformers\\python.exe",
+    "clip_path": "E:/CFAN/weights/ViT-B-16.pt",
+    "gain_shape": [
+      11,
+      1,
+      129,
+      768
+    ],
+    "parameters": 1089792,
+    "gain_lr": 0.00035,
+    "weight_decay": 0.0001,
+    "injection_sites": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "shared_initialization": "bitwise",
+    "initial_pre_post_output": "bitwise",
+    "formal_loader_roundtrip": "bitwise",
+    "signature": [
+      703.0,
+      1.0,
+      12.0,
+      129.0,
+      768.0,
+      0.0,
+      0.5,
+      0.0,
+      0.0,
+      1.0,
+      1e-05
+    ],
+    "input": "synthetic images",
+    "uniform_e2_control": {
+      "status": "PASSED",
+      "e2_root": "C:\\Users\\skrXukun\\.codex\\worktrees\\trajectory-e2\\Trajectory",
+      "e2_commit": "832c936a01a1406ebf936f9d3bda66b31990c1c2",
+      "e2_worktree_status": "",
+      "merged_recipe_parity": "only variant and output differ",
+      "device": "cpu",
+      "dtype": "float32",
+      "e2_attention_grad": null,
+      "cases": [
+        {
+          "shape": [
+            4,
+            5,
+            8
+          ],
+          "sites": 3,
+          "max_output_abs_error": 2.2351741790771484e-08,
+          "max_velocity_grad_abs_error": 2.9802322387695312e-08,
+          "max_gain_grad_abs_error": 1.1920928955078125e-07
+        },
+        {
+          "shape": [
+            12,
+            129,
+            768
+          ],
+          "sites": 11,
+          "max_output_abs_error": 2.384185791015625e-07,
+          "max_velocity_grad_abs_error": 7.152557373046875e-07,
+          "max_gain_grad_abs_error": 1.430511474609375e-06
+        }
+      ]
+    },
+    "formal_training": false
+  },
+  "real_data_amp": {
+    "status": "PASSED",
+    "checks": {
+      "steps_complete": true,
+      "all_velocity_observations_differentiable": true,
+      "original_qk_gradients": true,
+      "all_gradients_finite": true,
+      "first_step_all_gain_rows_receive_gradient": true,
+      "gain_updates": true,
+      "one_bn_update_per_step": true
+    },
+    "runtime": "Runtime: python=3.9.23, torch=2.2.1+cu118, torchvision=0.17.1+cu118, timm=1.0.19, torch_cuda=11.8, cudnn=8700, device=NVIDIA GeForce RTX 3050 Laptop GPU, cudnn_deterministic=True, cudnn_benchmark=True",
+    "python": "E:\\software\\Anaconda\\envs\\transformers\\python.exe",
+    "logical_batch": 8,
+    "actual_images": 24,
+    "amp_init_scale_smoke_only": 128.0,
+    "signature": [
+      703.0,
+      1.0,
+      12.0,
+      129.0,
+      768.0,
+      0.0,
+      0.5,
+      0.0,
+      0.0,
+      1.0,
+      1e-05
+    ],
+    "gain_nonzero": 1089792,
+    "peak_allocated_bytes": 3178244608,
+    "steps": [
+      {
+        "step": 1,
+        "gain_lr": 3.5e-06,
+        "gain_grad_finite": true,
+        "gain_changed": true,
+        "qk_grad_finite": true,
+        "qk_grad_nonzero": true,
+        "grad_norm_finite": true,
+        "scale_before": 128.0,
+        "scale_after": 128.0,
+        "min_gain_layer_grad_norm": 2.2987353801727295,
+        "injection_sites": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "velocity_requires_grad": true
+      },
+      {
+        "step": 2,
+        "gain_lr": 6.965e-06,
+        "gain_grad_finite": true,
+        "gain_changed": true,
+        "qk_grad_finite": true,
+        "qk_grad_nonzero": true,
+        "grad_norm_finite": true,
+        "scale_before": 128.0,
+        "scale_after": 128.0,
+        "min_gain_layer_grad_norm": 5.476475238800049,
+        "injection_sites": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "velocity_requires_grad": true
+      },
+      {
+        "step": 3,
+        "gain_lr": 1.043e-05,
+        "gain_grad_finite": true,
+        "gain_changed": true,
+        "qk_grad_finite": true,
+        "qk_grad_nonzero": true,
+        "grad_norm_finite": true,
+        "scale_before": 128.0,
+        "scale_after": 128.0,
+        "min_gain_layer_grad_norm": 2.6031103134155273,
+        "injection_sites": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "velocity_requires_grad": true
+      }
+    ]
+  },
+  "syntax_and_launcher": {
+    "status": "PASSED",
+    "order": [
+      "runtime",
+      "train",
+      "post",
+      "pre"
+    ],
+    "python38_ast_files": [
+      "model/backbones/token_trajectory_variants.py",
+      "model/backbones/vit_pytorch.py",
+      "model/make_model.py",
+      "train.py",
+      "model/backbones/token_trajectory_round5.py",
+      "tests/test_trajectory_E3.py",
+      "tools/check_trajectory_E3_model.py",
+      "tools/check_trajectory_E3_regression.py",
+      "tools/smoke_trajectory_E3.py"
+    ],
+    "bash_syntax": "PASSED",
+    "line_endings": "LF",
+    "formal_training": false
+  },
+  "not_executed": [
+    "target llmpar Python3.8/torch2.4.1 runtime",
+    "A800 batch192/test1024 capacity",
+    "formal default GradScaler full training",
+    "60 epoch retrieval evaluation",
+    "per-query dual-readout export"
+  ]
+}
