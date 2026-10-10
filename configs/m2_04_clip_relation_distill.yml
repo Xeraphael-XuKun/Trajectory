@@ -1,5 +1,4 @@
-# C0: Velocity-only control.
-# Fixed llmpar + CLIP normalization; inherits L_C_T training settings; VTC off.
+# M2-4 完整配置：原velocity-only dense C0加固定RGB关系蒸馏。
 
 MODEL:
   PRETRAIN_CHOICE: 'imagenet'
@@ -19,10 +18,14 @@ MODEL:
   PE_FREEZE_BASE: False
 
   TEXT_ALIGN: False
-  TEXT_CLIP_PATH: 'ViT-B-16.pt'
-  TEXT_N_CTX: 4
-  TEXT_MODALITY: 'RGB'
-  TEXT_TEMPLATE: 'a photo of a X view person with X X X X .'
+  VPR: False
+  MOD_DELTA: False
+  CE_SPLIT_VIEW: False
+  CE_SPLIT_MODALITY: False
+  SIE_CAMERA: False
+  SIE_VIEW: False
+  DIST_TRAIN: False
+  PE_TYPE: 'learnable'
 
 INPUT:
   SIZE_TRAIN: [256, 128]
@@ -38,11 +41,15 @@ DATASETS:
   ROOT_DIR: '/mnt/cache/wanghanzhi/Datasets'
   MODALITIES: ['RGB', 'IR', 'Thermal']
   AERIAL_CAMS: [5, 6]
+  PROTOCOL: 'ALL'
+  SUBDIR: 'WHU-MARS'
 
 DATALOADER:
   SAMPLER: 'PKM'
   NUM_INSTANCE: 4
   NUM_WORKERS: 8
+  SYNC_FRAMES: False
+  TIE_AUGMENTATION: False
 
 SOLVER:
   OPTIMIZER_NAME: 'Adam'
@@ -64,6 +71,9 @@ SOLVER:
   LOSS_TYPE: 'base'
   PE_DELTA_LR_MULT: 1.0
   TEXT_LOSS_WEIGHT: 0.0
+  TWIN_LOSS_WEIGHT: 0.0
+  TNCE_WEIGHT: 0.0
+  MOD_DELTA_ONLY: False
 
 TEST:
   EVAL: True
@@ -72,14 +82,18 @@ TEST:
   WEIGHT: 'transformer_60.pth'
   NECK_FEAT: 'after'
   FEAT_NORM: 'yes'
+  METRIC: 'sysu'
+  TOP_K_EVAL: 0
 
-OUTPUT_DIR: '/mnt/cache/wanghanzhi/XK/outputs/m2-d/student'
+OUTPUT_DIR: '/mnt/cache/wanghanzhi/XK/m2-d/logs/student'
 
 M2:
   ENABLED: True
   VARIANT: 'clip_relation_distill'
-  RELATION_BANK: '/mnt/cache/wanghanzhi/XK/outputs/m2-d/artifacts/clip_identity_relation.pt'
-  RGB_CENTERS: '/mnt/cache/wanghanzhi/XK/outputs/m2-d/artifacts/rgb_identity_centers.pt'
+  CLIP_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
+  FEATURE_CACHE: '/mnt/cache/wanghanzhi/XK/m2-d/artifacts/rgb_clip_features.pt'
+  RELATION_BANK: '/mnt/cache/wanghanzhi/XK/m2-d/artifacts/clip_identity_relation.pt'
+  RGB_CENTERS: '/mnt/cache/wanghanzhi/XK/m2-d/artifacts/rgb_identity_centers.pt'
   TEACHER_TEMPERATURE: 0.07
   STUDENT_TEMPERATURE: 0.07
   RELATION_WEIGHT: 0.2

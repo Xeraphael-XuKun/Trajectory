@@ -366,22 +366,17 @@ def do_train(cfg,
     logger.info('start training')
     relation_bank = None
     if cfg.M2.ENABLED:
+        if cfg.MODEL.PRETRAIN_CHOICE != 'imagenet':
+            raise ValueError('M2-4 main training starts from original CLIP; full restore uses M2.RESUME')
         from loss.clip_relation import identity_modality_centers, relation_kl
-        if cfg.M2.VARIANT != 'clip_relation_distill' or cfg.M2.RELATION_READOUT != 'after':
-            raise ValueError('M2-4 requires clip_relation_distill and post-BN readout')
-        if not cfg.M2.RELATION_REMOVE_SAME_ID or not cfg.M2.RELATION_ALL_MODAL_PAIRS:
-            raise ValueError('M2-4 first configuration requires diagonal removal and all nine pairs')
-        from tools.m2_cache import validate_artifact
-        artifact = torch.load(cfg.M2.RELATION_BANK, map_location='cpu', weights_only=False)
-        validate_artifact(artifact, cfg)
-        relation_bank = artifact['relation'].to(device).detach()
-        # The dataloader exposes relabelled train IDs (0..N-1), while the
-        # offline cache carries an explicit PID order.  Never silently index
-        # the relation matrix by an assumed ordering.
-        pid_order = [int(x) for x in artifact['pid_order']]
-        if len(set(pid_order)) != len(pid_order):
-            raise ValueError('M2-4 relation cache pid_order contains duplicates')
-        pid_to_bank = {pid: i for i, pid in enumerate(pid_order)}
+        from tools.m2_cache import load_relation_bank
+        from utils.m4_checkpoint import attach_metadata
+        model_meta = model.module if hasattr(model, 'module') else model
+        artifact = load_relation_bank(cfg, model_meta.num_classes, device)
+        relation_bank = artifact['relation']
+        attach_metadata(model_meta, cfg, artifact)
+        logger.info('M2-4 RGB teacher centers=%s images=%s camera_rows=%s',
+                    len(artifact['pid_order']), artifact['teacher_feature_images'], len(artifact['camera_rows']))
     if device:
         model.to(local_rank)
         if torch.cuda.device_count() > 1 and cfg.MODEL.DIST_TRAIN:
@@ -482,7 +477,13 @@ def do_train(cfg,
 
     group_size = cfg.DATALOADER.NUM_INSTANCE
 
-    for epoch in range(1, epochs + 1):
+    m4_iterations = m4_updates = m4_amp_skips = 0
+    start_epoch = 1
+    if relation_bank is not None and cfg.M2.RESUME:
+        from utils.m4_checkpoint import restore_training
+        start_epoch, m4_iterations, m4_updates, m4_amp_skips = restore_training(
+            cfg.M2.RESUME, model_meta, optimizer, scheduler, scaler)
+    for epoch in range(start_epoch, epochs + 1):
         start_time = time.time()
         loss_meter.reset()
         acc_meter.reset()
@@ -539,21 +540,17 @@ def do_train(cfg,
                     with amp.autocast(enabled=False):
                         mods = torch.arange(num_modalities, device=feat.device).repeat_interleave(len(target))
                         centers, ids, valid = identity_modality_centers(feat, target_rep, mods)
-                        try:
-                            bank_ids = torch.as_tensor(
-                                [pid_to_bank[int(x)] for x in ids.detach().cpu().tolist()],
-                                dtype=torch.long, device=device)
-                        except KeyError as exc:
-                            raise ValueError(
-                                'M2-4 relation cache pid_order does not cover '
-                                'the relabelled training PID {}'.format(exc.args[0]))
-                        rel_loss, rel_stats = relation_kl(
-                            centers, relation_bank[bank_ids][:, bank_ids],
-                            cfg.M2.STUDENT_TEMPERATURE, cfg.M2.TEACHER_TEMPERATURE,
-                            valid=valid, return_stats=True)
+                        # Source validation establishes row y == actual relabelled train y.
+                        diagnostic = n_iter % log_period == 0
+                        if diagnostic:
+                            centers.retain_grad()
+                            rel_loss, rel_stats = relation_kl(
+                                centers, relation_bank[ids][:, ids], cfg.M2.STUDENT_TEMPERATURE,
+                                cfg.M2.TEACHER_TEMPERATURE, valid=valid, return_stats=True)
+                        else:
+                            rel_loss = relation_kl(centers, relation_bank[ids][:, ids],
+                                cfg.M2.STUDENT_TEMPERATURE, cfg.M2.TEACHER_TEMPERATURE, valid=valid)
                         loss = loss + cfg.M2.RELATION_WEIGHT * rel_loss
-                    if n_iter % log_period == 0:
-                        logger.info('M2-4 relation_loss=%s stats=%s', rel_loss.item(), rel_stats)
                 vpr_aux_total = loss.new_zeros(())
 
                 if aux is not None and aux.get('kind') == 'vpr':
@@ -652,8 +649,22 @@ def do_train(cfg,
                 display_loss = total_loss.detach()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
+            if relation_bank is not None:
+                m4_iterations += 1
+                if scaler.get_scale() >= scale_before:
+                    m4_updates += 1
+                else:
+                    m4_amp_skips += 1
+                if diagnostic:
+                    stats = {key: value.cpu().tolist() for key, value in rel_stats.items()}
+                    center_grad = centers.grad.detach().float().norm().item() / scale_before
+                    gain_grad = model_meta.base.token_trajectory.gain.grad.norm().item()
+                    bn_grad = model_meta.bottleneck.weight.grad.norm().item()
+                    logger.info('M2-4 loss=%.6g stats=%s center_grad_unscaled=%.6g gain_grad_clipped=%.6g BN_grad_clipped=%.6g',
+                        rel_loss.item(), stats, center_grad, gain_grad, bn_grad)
 
             if use_aux_modules:
                 with torch.no_grad():
@@ -837,7 +848,9 @@ def do_train(cfg,
                 )
             )
 
-        if epoch % checkpoint_period == 0:
+        if relation_bank is not None:
+            logger.info('M2-4 cumulative iterations=%s optimizer_updates=%s AMP_skips=%s', m4_iterations, m4_updates, m4_amp_skips)
+        if epoch % checkpoint_period == 0 and relation_bank is None:
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
                     torch.save(model.state_dict(), os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
@@ -877,6 +890,11 @@ def do_train(cfg,
                 for r in (1, 5, 10):
                     logger.info(f'CMC curve, Rank-{r:<2}: {cmc[r-1]:.2%}')
             torch.cuda.empty_cache()
+        if epoch % checkpoint_period == 0 and relation_bank is not None:
+            # Snapshot after validation loaders, at the complete epoch boundary.
+            from utils.m4_checkpoint import save_training
+            save_training(cfg.OUTPUT_DIR, cfg.MODEL.NAME, epoch, model_meta, optimizer,
+                          scheduler, scaler, m4_iterations, m4_updates, m4_amp_skips)
 
 
 def do_inference(cfg,

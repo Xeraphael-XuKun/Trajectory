@@ -1,11 +1,25 @@
-"""Build M2-4 relation bank from a previously audited RGB-center tensor."""
-import argparse, torch
-from m2_cache import build_relation_cache
-p=argparse.ArgumentParser(); p.add_argument('--centers',required=True); p.add_argument('--pid-order',required=True, help='torch file containing 1D train PID order'); p.add_argument('--output',required=True); a=p.parse_args()
-c=torch.load(a.centers,map_location='cpu',weights_only=False); ids=torch.load(a.pid_order,map_location='cpu',weights_only=False)
-meta={}
-if isinstance(c,dict):
-    meta.update(c.get('metadata',{})); c=c.get('centers',c.get('features'))
-if isinstance(ids,dict): ids=ids.get('pid_order',ids.get('pids'))
-build_relation_cache(c,ids,a.output,metadata=meta)
-print('saved',a.output)
+"""从已核验中心重新构建M2-4余弦关系，不接受无来源裸tensor。"""
+import argparse
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import torch
+from config import cfg as defaults
+from tools.m2_cache import build_relation_cache
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config-file', required=True)
+    parser.add_argument('--centers')
+    parser.add_argument('--output')
+    args = parser.parse_args()
+    cfg = defaults.clone()
+    cfg.merge_from_file(args.config_file)
+    cfg.M2.RGB_CENTERS = args.centers or cfg.M2.RGB_CENTERS
+    cfg.M2.RELATION_BANK = args.output or cfg.M2.RELATION_BANK
+    centers = torch.load(cfg.M2.RGB_CENTERS, map_location='cpu', weights_only=False)
+    build_relation_cache(centers, cfg.M2.RELATION_BANK, cfg)
+    print('已按真实train来源重新生成关系表')
+
+if __name__ == '__main__':
+    main()

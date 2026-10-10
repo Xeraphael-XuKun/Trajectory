@@ -1,24 +1,82 @@
-"""Build M2-4 train-only RGB identity centers from original CLIP images."""
-import argparse,re
+"""M2-4：原始冻结CLIP train/RGB特征→相机均衡中心→余弦关系。"""
+import argparse
+import os
+import subprocess
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms
+from torch.utils.data import Dataset, DataLoader
+from config import cfg as defaults
 from model.backbones.vit_pytorch import vit_base_clip
+from utils.m4_artifacts import train_manifest, describe, PREPROCESS, VERSION, BASE_COMMIT, file_hash, validate_features, camera_balanced_centers
 from tools.m2_cache import build_relation_cache
-PAT=re.compile(r'(\d+)_c(\d+)')
+
+class RGBImages(Dataset):
+    def __init__(self, rows):
+        self.rows = rows
+        self.transform = transforms.Compose([transforms.Resize((256, 128)), transforms.ToTensor(),
+            transforms.Normalize(PREPROCESS['mean'], PREPROCESS['std'])])
+    def __len__(self):
+        return len(self.rows)
+    def __getitem__(self, i):
+        with Image.open(self.rows[i][0]) as image:
+            return self.transform(image.convert('RGB'))
+
 def main():
- p=argparse.ArgumentParser();p.add_argument('--data-root',required=True);p.add_argument('--clip',required=True);p.add_argument('--output',required=True);p.add_argument('--batch-size',type=int,default=64);p.add_argument('--device',default='cuda');a=p.parse_args(); root=Path(a.data_root)/'train'/'RGB'; rows=[]
- for f in sorted(root.glob('*.jpg')):
-  m=PAT.search(f.name)
-  if m: rows.append((f,int(m.group(1)),int(m.group(2))-1))
- pid_order=sorted({r[1] for r in rows}); pid_map={p:i for i,p in enumerate(pid_order)}; dev=torch.device(a.device if torch.cuda.is_available() else 'cpu'); tf=transforms.Compose([transforms.Resize((256,128),interpolation=transforms.InterpolationMode.BICUBIC),transforms.ToTensor(),transforms.Normalize((.48145466,.4578275,.40821073),(.26862954,.26130258,.27577711))]); net=vit_base_clip(img_size=(256,128),stride_size=16,drop_path_rate=0.).to(dev).eval(); obj=torch.load(a.clip,map_location='cpu',weights_only=False); net._load_clip_visual(obj.state_dict() if isinstance(obj,torch.nn.Module) else obj); [q.requires_grad_(False) for q in net.parameters()]; feats=[]
- with torch.no_grad():
-  for i in range(0,len(rows),a.batch_size): feats.append((net(torch.stack([tf(Image.open(r[0]).convert('RGB')) for r in rows[i:i+a.batch_size]]).to(dev)).float() @ net.clip_proj.detach()).cpu())
- z=torch.nn.functional.normalize(torch.cat(feats),dim=-1); sums={}; counts={}
- for i,(_,raw,cam) in enumerate(rows): sums.setdefault((raw,cam),torch.zeros(512)); sums[(raw,cam)]+=z[i]; counts[(raw,cam)]=counts.get((raw,cam),0)+1
- centers=[]
- for raw in pid_order:
-  cams=sorted(c for (p,c) in sums if p==raw); per=[torch.nn.functional.normalize(sums[(raw,c)]/counts[(raw,c)],dim=0) for c in cams]; centers.append(torch.nn.functional.normalize(torch.stack(per).mean(0),dim=0))
- out=Path(a.output); out.parent.mkdir(parents=True,exist_ok=True); payload={'centers':torch.stack(centers),'pid_order':list(range(len(pid_order))),'metadata':{'split':'train','modality':'RGB','feature_dim':512,'normalize':'l2','raw_pid_order':pid_order,'clip_path':str(Path(a.clip).resolve()),'preprocess':{'size':[256,128],'mean':[.48145466,.4578275,.40821073],'std':[.26862954,.26130258,.27577711]}}}; torch.save(payload,out); build_relation_cache(payload['centers'],payload['pid_order'],str(out.with_name('clip_identity_relation.pt')),metadata=payload['metadata']); print('saved',out)
-if __name__=='__main__': main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config-file', required=True)
+    for key in ('data-root', 'clip', 'output', 'relation-output', 'feature-output'):
+        parser.add_argument('--' + key)
+    parser.add_argument('--batch-size', type=int, default=64)
+    parser.add_argument('--workers', type=int, default=8)
+    parser.add_argument('--device', default='cuda')
+    args = parser.parse_args()
+    cfg = defaults.clone()
+    cfg.merge_from_file(args.config_file)
+    cfg.DATASETS.ROOT_DIR = args.data_root or cfg.DATASETS.ROOT_DIR
+    cfg.M2.CLIP_PATH = args.clip or cfg.M2.CLIP_PATH
+    cfg.MODEL.PRETRAIN_PATH = cfg.M2.CLIP_PATH
+    cfg.M2.RGB_CENTERS = args.output or cfg.M2.RGB_CENTERS
+    cfg.M2.RELATION_BANK = args.relation_output or cfg.M2.RELATION_BANK
+    cfg.M2.FEATURE_CACHE = args.feature_output or cfg.M2.FEATURE_CACHE
+    rows, mapping = train_manifest(cfg.DATASETS.ROOT_DIR, cfg.DATASETS.SUBDIR)
+    rgb = [row for row in rows if row[3] == 0]
+    missing = sorted(set(range(len(mapping))) - {row[1] for row in rgb})
+    if missing:
+        raise ValueError('train identities without RGB; no centers fabricated: {}'.format(missing))
+    device = torch.device(args.device)
+    torch.manual_seed(cfg.SOLVER.SEED)
+    model = vit_base_clip(img_size=(256,128), stride_size=[16,16], drop_path_rate=0.)
+    model.load_param(cfg.M2.CLIP_PATH)
+    model.requires_grad_(False).to(device).eval()
+    loader = DataLoader(RGBImages(rgb), batch_size=args.batch_size, shuffle=False,
+                        num_workers=args.workers, pin_memory=device.type == 'cuda')
+    features = []
+    with torch.no_grad():
+        for images in loader:
+            features.append(F.normalize(model(images.to(device)).float() @ model.clip_proj.float(), dim=1).cpu())
+    meta = describe(rows, mapping, cfg.M2.CLIP_PATH)
+    commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=str(Path(__file__).resolve().parents[1]), text=True).strip()
+    common = {'variant': 'clip_relation_distill', 'implementation': VERSION, 'base_commit': BASE_COMMIT,
+              'code_commit': commit, 'config': cfg.dump(), 'metadata': meta,
+              'preparation_optimizer_updates': 0, 'teacher_feature_images': len(rgb)}
+    cache = dict(common, features=torch.cat(features), pid=torch.tensor([row[1] for row in rgb]),
+                 cams=torch.tensor([row[2] for row in rgb]), modality=torch.tensor([row[3] for row in rgb]),
+                 platform=torch.tensor([int(row[2] in (5,6)) for row in rgb]))
+    validate_features(cache, cfg)
+    os.makedirs(os.path.dirname(os.path.abspath(cfg.M2.FEATURE_CACHE)), exist_ok=True)
+    torch.save(cache, cfg.M2.FEATURE_CACHE)
+    centers, camera_rows = camera_balanced_centers(cache['features'], cache['pid'], cache['cams'], len(mapping))
+    center_artifact = dict(common, centers=centers, pid_order=list(range(len(mapping))), camera_rows=camera_rows,
+        center_recipe='image_l2_camera_mean_l2_equal_camera_mean_l2', feature_sha256=file_hash(cfg.M2.FEATURE_CACHE))
+    os.makedirs(os.path.dirname(os.path.abspath(cfg.M2.RGB_CENTERS)), exist_ok=True)
+    torch.save(center_artifact, cfg.M2.RGB_CENTERS)
+    build_relation_cache(center_artifact, cfg.M2.RELATION_BANK, cfg)
+    print('已保存{}张train/RGB特征、{}个相机均衡身份中心和原始余弦关系；没有prompt或教师训练。'.format(len(rgb),len(mapping)), flush=True)
+
+if __name__ == '__main__':
+    main()
