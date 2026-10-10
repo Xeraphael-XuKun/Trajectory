@@ -195,7 +195,11 @@ class Block(nn.Module):
             self.gamma_1 = self.gamma_2 = None
 
     def forward(self, x, chart=None, qkv_delta=None):
-        a = self.attn(self.norm1(x), chart=chart, qkv_delta=qkv_delta)
+        h = self.norm1(x)
+        if isinstance(qkv_delta, tuple):
+            adapter, layer, modality, platform = qkv_delta
+            qkv_delta = adapter.qkv_delta(layer, modality, platform, h)
+        a = self.attn(h, chart=chart, qkv_delta=qkv_delta)
         m_in = x + self.drop_path(a if self.gamma_1 is None else self.gamma_1 * a)
         m = self.mlp(self.norm2(m_in))
         return m_in + self.drop_path(m if self.gamma_2 is None else self.gamma_2 * m)
@@ -689,10 +693,7 @@ class TransReID(nn.Module):
             block_input = x
             qkv_delta = None
             if conditional_lora is not None:
-                qkv_delta = conditional_lora.qkv_delta(
-                    i, conditional_modality, conditional_platform,
-                    x=blk.norm1(x),
-                    device=x.device)
+                qkv_delta = (conditional_lora, i, conditional_modality, conditional_platform)
             x = blk(x, chart=chart, qkv_delta=qkv_delta)
             if self.token_trajectory is not None:
                 current_velocity = x - block_input

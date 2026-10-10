@@ -449,39 +449,33 @@ def do_train(cfg,
     )
     scaler = amp.GradScaler()
     model_meta = model.module if hasattr(model, 'module') else model
-    m2_enabled = bool(cfg.M2.ENABLED) and cfg.M2.VARIANT == 'conditional_teacher_distill'
-    m2_teacher = m2_teacher_backbone = m2_text = None
-    m2_tau = float(cfg.M2.KD_TEMPERATURE)
-    m2_weight = float(cfg.M2.KD_WEIGHT)
+    m2_enabled = bool(cfg.M2.ENABLED)
+    m2_teacher = m2_text = None
+    m2_stage = str(cfg.M2.TRAIN_STAGE)
+    m2_tau, m2_weight = float(cfg.M2.KD_TEMPERATURE), float(cfg.M2.KD_WEIGHT)
+    m5_iterations = m5_updates = m5_amp_skips = 0
+    start_epoch, m5_elapsed = 1, 0.
     if m2_enabled:
-        from model.m2_teacher import ConditionalFeatureTeacher, kd_kl
-        text_path = str(cfg.M2.TEXT_BANK)
-        teacher_path = str(cfg.M2.TEACHER_WEIGHT)
-        if not text_path or not teacher_path:
-            raise ValueError('M2-5 requires M2.TEXT_BANK and M2.TEACHER_WEIGHT')
-        m2_text = torch.load(text_path, map_location='cpu')['text_bank'].float().to(local_rank)
-        m2_teacher = ConditionalFeatureTeacher(
-            dim=768, modalities=int(cfg.TEACHER_STAGE.MODALITY_BANKS),
-            platforms=int(cfg.TEACHER_STAGE.PLATFORM_BANKS),
-            rank=int(cfg.TEACHER_STAGE.LORA_RANK),
-            alpha=float(cfg.TEACHER_STAGE.LORA_ALPHA)).to(local_rank)
-        state = torch.load(teacher_path, map_location='cpu')
-        if state.get('dim', 768) != 768 or state.get('split', 'train') != 'train':
-            raise ValueError('M2-5 teacher artifact must be a train-only 768-D Q/V-LoRA teacher')
-        m2_teacher.load_state_dict(state.get('state_dict', state), strict=False)
-        m2_teacher.eval()
-        for p in m2_teacher.parameters(): p.requires_grad_(False)
-        # The teacher is a separate frozen copy of the original CLIP visual
-        # tower.  Reusing model_meta.base would make the target move with the
-        # student and would silently turn online KD into self-distillation.
-        from model.backbones.vit_pytorch import vit_base_clip
-        m2_teacher_backbone = vit_base_clip(
-            img_size=cfg.INPUT.SIZE_TRAIN,
-            stride_size=cfg.MODEL.STRIDE_SIZE).to(local_rank)
-        m2_teacher_backbone._load_clip_visual(
-            torch.load(cfg.MODEL.PRETRAIN_PATH, map_location='cpu', weights_only=False))
-        m2_teacher_backbone.eval()
-        for p in m2_teacher_backbone.parameters(): p.requires_grad_(False)
+        from tools.m2.artifacts import validate_config, validate_text_bank
+        from model.m2_teacher import normalized_clip_logits, kd_kl
+        from utils.m5_checkpoint import attach_metadata, load_teacher, restore_training
+        validate_config(cfg)
+        if cfg.MODEL.PRETRAIN_CHOICE != 'imagenet':
+            raise ValueError('M2-5 stages start from original CLIP; use M2.RESUME for full-state resume')
+        bank = torch.load(cfg.M2.TEXT_BANK, map_location='cpu', weights_only=False)
+        validate_text_bank(bank, cfg, model_meta.num_classes)
+        m2_text = bank['text_bank'].float().to(local_rank).detach()
+        teacher_obj = None
+        if m2_stage == 'student':
+            m2_teacher, teacher_obj = load_teacher(cfg, model_meta.num_classes, local_rank)
+        attach_metadata(model_meta, cfg, bank, teacher_obj)
+        os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
+        with open(os.path.join(cfg.OUTPUT_DIR, 'config_merged.yml'), 'w', encoding='utf-8') as stream:
+            stream.write(cfg.dump())
+        if cfg.M2.RESUME:
+            start_epoch, m5_iterations, m5_updates, m5_amp_skips, m5_elapsed = restore_training(
+                cfg.M2.RESUME, model_meta, optimizer, scheduler, scaler)
+    m5_wall_start = time.time()
     feat_dim = getattr(model_meta, 'in_planes', 768)
     num_classes = getattr(model_meta, 'num_classes', 500)
     loss_type = cfg.SOLVER.LOSS_TYPE.lower().strip()
@@ -497,7 +491,7 @@ def do_train(cfg,
 
     group_size = cfg.DATALOADER.NUM_INSTANCE
 
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + 1):
         start_time = time.time()
         loss_meter.reset()
         acc_meter.reset()
@@ -551,20 +545,25 @@ def do_train(cfg,
                 loss, il, tl = loss_fn(cls_score, global_feat, target_rep,
                                        target_ce=target_ce)
                 if m2_enabled:
-                    x_all = torch.cat(imgs, dim=0)
-                    mod_all = torch.arange(num_modalities, device=x_all.device).repeat_interleave(x_all.shape[0] // num_modalities)
-                    cam_all = torch.cat(camids, dim=0)
-                    plat_all = torch.isin(cam_all, ce_aerial.to(cam_all.device)).long()
-                    with torch.no_grad():
-                        g_teacher = m2_teacher.forward_visual(
-                            m2_teacher_backbone, x_all, mod_all, plat_all)
-                        z_teacher = torch.nn.functional.normalize(
-                            g_teacher.float() @ m2_teacher_backbone.clip_proj.float(), dim=-1)
-                        lt = z_teacher @ m2_text.to(z_teacher.device).t() / float(cfg.M2.TEXT_TEMPERATURE)
-                    z_student = torch.nn.functional.normalize(
-                        global_feat.float() @ model_meta.base.clip_proj.float(), dim=-1)
-                    ls = z_student @ m2_text.to(z_student.device).t() / float(cfg.M2.TEXT_TEMPERATURE)
-                    loss = loss + m2_weight * kd_kl(lt, ls, m2_tau)
+                    if m2_stage == 'teacher':
+                        ls = normalized_clip_logits(global_feat, model_meta.base.clip_proj,
+                            m2_text, cfg.TEACHER_STAGE.TEMPERATURE)
+                        m5_aux = torch.nn.functional.cross_entropy(ls, target_rep)
+                        loss = loss + cfg.TEACHER_STAGE.TEXT_ID_WEIGHT * m5_aux
+                    else:
+                        x_all = torch.cat(imgs, dim=0)
+                        mod_all = torch.arange(num_modalities, device=x_all.device).repeat_interleave(len(target))
+                        cam_all = torch.cat(camids, dim=0)
+                        plat_all = ((cam_all == 5) | (cam_all == 6)).long()
+                        with torch.no_grad():
+                            # Exact same augmented tensors, frozen/eval teacher, pre-BN only.
+                            g_teacher = m2_teacher.forward_pre_bn(x_all, mod_all, plat_all)
+                            lt = normalized_clip_logits(g_teacher, m2_teacher.base.clip_proj,
+                                m2_text, cfg.M2.TEXT_TEMPERATURE)
+                        ls = normalized_clip_logits(global_feat, model_meta.base.clip_proj,
+                            m2_text, cfg.M2.TEXT_TEMPERATURE)
+                        m5_aux = kd_kl(lt, ls, m2_tau)
+                        loss = loss + m2_weight * m5_aux
                 vpr_aux_total = loss.new_zeros(())
 
                 if aux is not None and aux.get('kind') == 'vpr':
@@ -663,8 +662,24 @@ def do_train(cfg,
                 display_loss = total_loss.detach()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
+            if m2_enabled:
+                m5_iterations += 1
+                if scaler.get_scale() >= scale_before:
+                    m5_updates += 1
+                else:
+                    m5_amp_skips += 1
+                if (n_iter + 1) % log_period == 0:
+                    with amp.autocast(enabled=False), torch.no_grad():
+                        def entropy(logits, temperature=1.):
+                            logp = (logits.float() / temperature).log_softmax(-1)
+                            return -(logp.exp() * logp).sum(-1).mean().item()
+                        logger.info('M2-5 stage=%s auxiliary=%.6g student_entropy=%.6g teacher_entropy=%s updates=%d AMP_skips=%d',
+                            m2_stage, m5_aux.item(), entropy(ls, m2_tau if m2_stage == 'student' else 1.),
+                            entropy(lt, m2_tau) if m2_stage == 'student' else 'N/A', m5_updates, m5_amp_skips)
+
 
             if use_aux_modules:
                 with torch.no_grad():
@@ -848,7 +863,7 @@ def do_train(cfg,
                 )
             )
 
-        if epoch % checkpoint_period == 0:
+        if not m2_enabled and epoch % checkpoint_period == 0:
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
                     torch.save(model.state_dict(), os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
@@ -888,6 +903,16 @@ def do_train(cfg,
                 for r in (1, 5, 10):
                     logger.info(f'CMC curve, Rank-{r:<2}: {cmc[r-1]:.2%}')
             torch.cuda.empty_cache()
+
+        if m2_enabled and (epoch % checkpoint_period == 0 or epoch == epochs):
+            from utils.m5_checkpoint import save_training
+            payload = save_training(cfg.OUTPUT_DIR, cfg.MODEL.NAME, epoch, model_meta,
+                optimizer, scheduler, scaler, m5_iterations, m5_updates, m5_amp_skips,
+                m5_elapsed + time.time() - m5_wall_start)
+            import json
+            with open(os.path.join(cfg.OUTPUT_DIR, 'stage_budget.json'), 'w', encoding='utf-8') as stream:
+                json.dump({key: payload['metadata'][key] for key in ('stage', 'epoch', 'actual_iterations',
+                    'optimizer_updates', 'amp_skips', 'stage_seconds')}, stream, ensure_ascii=False, indent=2)
 
 
 def do_inference(cfg,

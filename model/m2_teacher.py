@@ -1,50 +1,81 @@
-"""M2-5 conditional teacher components.
-The Q/V LoRA tensors are explicit and condition indexed; B is zero initialized.
-"""
+"""Condition-selected Q/V LoRA, original teacher heads, FP32 text/KD."""
 import torch
 from torch import nn
 import torch.nn.functional as F
+
 class ConditionalQVLora(nn.Module):
- def __init__(self,dim=768,depth=12,modalities=3,platforms=2,rank=8,alpha=8.):
-  super().__init__();self.dim=dim;self.depth=depth;self.scale=alpha/rank
-  for n,k in [('q_m',modalities),('v_m',modalities),('q_p',platforms),('v_p',platforms)]:
-   setattr(self,n+'A',nn.Parameter(torch.randn(depth,k,rank,dim)*.02));setattr(self,n+'B',nn.Parameter(torch.zeros(depth,k,dim,rank)))
- def delta(self,layer,mod,plat):
-  def d(n,i):return getattr(self,n+'B')[layer,i]@getattr(self,n+'A')[layer,i]*self.scale
-  return d('q_m',mod)+d('q_p',plat),d('v_m',mod)+d('v_p',plat)
- def qkv_weight(self,w,layer,mod,plat):
-  q,v=self.delta(layer,int(mod),int(plat));o=w.clone();o[:self.dim]+=q;o[2*self.dim:3*self.dim]+=v;return o
- def qkv_delta(self,layer,mod,plat,x=None,device=None):
-  mod=torch.as_tensor(mod,device=device).long().view(-1); plat=torch.as_tensor(plat,device=device).long().view(-1)
-  q=[]; v=[]
-  for m,p in zip(mod.tolist(),plat.tolist()):
-   a,b=self.delta(layer,m,p); q.append(a); v.append(b)
-  q=torch.stack(q); v=torch.stack(v)
-  if x is None:
-   # Weight-form fallback retained for smoke tests and inspection.
-   return torch.cat([q,torch.zeros_like(q),v],dim=1)
-  # True LoRA acts on each token's input.  The previous implementation added
-  # a condition-dependent bias to q/v, which is not a Q/V low-rank adapter.
-  return torch.cat([torch.einsum('bnd,bdk->bnk', x, q.transpose(1, 2)),
-                    torch.zeros(x.shape[0], x.shape[1], x.shape[2],
-                                dtype=x.dtype, device=x.device),
-                    torch.einsum('bnd,bdk->bnk', x, v.transpose(1, 2))], dim=-1)
-class ConditionalFeatureTeacher(nn.Module):
- """Condition adapter used by teacher training; frozen CLIP features are adapted per label."""
- def __init__(self,dim=768,**kw):
-  super().__init__();self.lora=ConditionalQVLora(dim=dim,**kw);self.norm=nn.BatchNorm1d(dim);self.bn=self.norm;self.classifier=nn.LazyLinear(1)
- def forward(self,feat,modality,platform):
-  # Feature-level execution is useful for cache smoke tests; production visual path uses qkv_weight.
-  return self.norm(feat)
- def forward_visual(self, backbone, images, modality, platform):
-  """Run the visual transformer with per-sample Q/V deltas."""
-  off = torch.zeros(images.shape[0], device=images.device, dtype=images.dtype)
-  return backbone(images, modal_label=None, view_label=None,
-                  trajectory_gate=off,
-                  conditional_lora=self.lora,
-                  conditional_modality=modality,
-                  conditional_platform=platform)
-def normalized_clip_logits(feat,proj,text_bank,tau=.07):
- return F.normalize(feat.float()@proj.float(),dim=-1)@F.normalize(text_bank.float(),dim=-1).t()/tau
-def kd_kl(logits_teacher,logits_student,temperature=2.):
- t=float(temperature);lt=F.log_softmax(logits_teacher.float()/t,dim=-1);ls=F.log_softmax(logits_student.float()/t,dim=-1);return t*t*F.kl_div(ls,lt.exp().detach(),reduction='batchmean')
+    def __init__(self, dim=768, depth=12, modalities=3, platforms=2, rank=8, alpha=8.):
+        super().__init__()
+        self.dim, self.depth, self.rank = dim, depth, rank
+        self.scale = alpha / rank
+        for name, banks in [('q_m', modalities), ('v_m', modalities), ('q_p', platforms), ('v_p', platforms)]:
+            setattr(self, name + 'A', nn.Parameter(torch.randn(depth, banks, rank, dim) * .02))
+            setattr(self, name + 'B', nn.Parameter(torch.zeros(depth, banks, dim, rank)))
+
+    def delta(self, layer, modality, platform):
+        def weight(name, condition):
+            return getattr(self, name + 'B')[layer, condition] @ getattr(self, name + 'A')[layer, condition] * self.scale
+        return weight('q_m', modality) + weight('q_p', platform), weight('v_m', modality) + weight('v_p', platform)
+
+    def qkv_delta(self, layer, modality, platform, x):
+        # Apply x A^T B^T. Never allocate [batch,768,768] weight matrices.
+        def low_rank(name, condition):
+            a = getattr(self, name + 'A')[layer].index_select(0, condition)
+            b = getattr(self, name + 'B')[layer].index_select(0, condition)
+            return torch.bmm(torch.bmm(x, a.transpose(1, 2)), b.transpose(1, 2)) * self.scale
+        q = low_rank('q_m', modality) + low_rank('q_p', platform)
+        v = low_rank('v_m', modality) + low_rank('v_p', platform)
+        return torch.cat([q, torch.zeros_like(q), v], dim=-1)
+
+class ConditionalVisualTeacher(nn.Module):
+    def __init__(self, cfg, num_classes, camera_num=0, view_num=0, load_original=True):
+        super().__init__()
+        from model import make_model
+        c = cfg.clone()
+        c.defrost()
+        c.M2.ENABLED = False
+        c.MODEL.TOKEN_TRAJECTORY = False
+        c.MODEL.PRETRAIN_CHOICE = 'imagenet' if load_original else 'no'
+        c.MODEL.PRETRAIN_PATH = cfg.M2.CLIP_PATH
+        original = make_model(c, num_classes, camera_num, view_num)
+        self.base, self.bottleneck, self.classifier = original.base, original.bottleneck, original.classifier
+        self.num_classes, self.in_planes, self.neck_feat = num_classes, 768, c.TEST.NECK_FEAT
+        for p in self.base.parameters():
+            p.requires_grad_(False)
+        # Original backbone and heads finish initialization before LoRA draws.
+        with torch.random.fork_rng(devices=[]):
+            self.lora = ConditionalQVLora(dim=768, depth=12,
+                modalities=c.TEACHER_STAGE.MODALITY_BANKS, platforms=c.TEACHER_STAGE.PLATFORM_BANKS,
+                rank=c.TEACHER_STAGE.LORA_RANK, alpha=c.TEACHER_STAGE.LORA_ALPHA)
+
+    def forward_pre_bn(self, images, modality, platform):
+        return self.base(images, conditional_lora=self.lora,
+            conditional_modality=modality, conditional_platform=platform)
+
+    def forward(self, x, label=None, camids=None, mode=0):
+        if mode == 0:
+            images = torch.cat(list(x), dim=0)
+            modality = torch.arange(3, device=images.device).repeat_interleave(len(x[0]))
+            cameras = torch.cat(camids).to(images.device)
+        else:
+            images = x
+            modality = torch.full((len(x),), mode - 1, dtype=torch.long, device=x.device)
+            cameras = camids.to(x.device)
+        platform = ((cameras == 5) | (cameras == 6)).long()
+        g = self.forward_pre_bn(images, modality, platform)
+        f = self.bottleneck(g)
+        if mode == 0:
+            return self.classifier(f), g, f
+        return f if self.neck_feat == 'after' else g
+
+def normalized_clip_logits(feat, proj, text_bank, tau=.07):
+    with torch.cuda.amp.autocast(enabled=False):
+        z = F.normalize(feat.float() @ proj.detach().float(), dim=-1)
+        return z @ text_bank.detach().float().t() / tau
+
+def kd_kl(logits_teacher, logits_student, temperature=2.):
+    with torch.cuda.amp.autocast(enabled=False):
+        t = float(temperature)
+        lt = F.log_softmax(logits_teacher.detach().float() / t, dim=-1)
+        ls = F.log_softmax(logits_student.float() / t, dim=-1)
+        return t * t * (lt.exp() * (lt - ls)).sum(-1).mean()

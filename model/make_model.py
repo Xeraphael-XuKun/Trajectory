@@ -178,6 +178,15 @@ class build_transformer(nn.Module):
         elif pretrain_choice == 'no':
             print('PRETRAIN_CHOICE is "no": training from random initialisation')
 
+        self.m5_active = bool(cfg.M2.ENABLED)
+        self.trajectory_accel_mix = cfg.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX
+        if self.m5_active:
+            if cfg.M2.TRAIN_STAGE != 'student':
+                raise ValueError('use tools/m2/train_conditional_teacher.py for the conditional teacher')
+            from tools.m2.artifacts import validate_config
+            validate_config(cfg)
+            self.base.clip_proj.requires_grad_(False)
+
         self.num_classes = num_classes
 
         from loss.make_loss import ce_modality_groups, ce_slot_count
@@ -553,10 +562,28 @@ class build_transformer(nn.Module):
         first tensor, and a *partially* matching one loaded whatever fit and
         left the rest at random init without a word.
         """
-        param_dict = torch.load(trained_path, map_location='cpu')
-        if 'state_dict' in param_dict:
-            param_dict = param_dict['state_dict']
+        obj = torch.load(trained_path, map_location='cpu', weights_only=False)
+        param_dict = obj.get('state_dict', obj)
         own = self.state_dict()
+        meta = obj.get('metadata')
+        if meta is not None and meta.get('variant') == 'conditional_teacher_distill':
+            from tools.m2.artifacts import VERSION
+            signature = {'trajectory_variant': self.base.token_trajectory_variant,
+                'acceleration_mix': self.trajectory_accel_mix,
+                'gain_shape': list(self.base.token_trajectory.gain.shape)} if self.use_token_trajectory else None
+            if meta['implementation'] != VERSION or meta['stage'] != 'student' or meta['student'] != signature:
+                raise ValueError('M2-5 deployment requires the saved original C0 student settings')
+            required = {key for key in own if not key.startswith('classifier.')}
+            keys = {key.replace('module.', '') for key in param_dict}
+            if not required.issubset(keys):
+                raise ValueError('M2-5 checkpoint is missing trained visual tensors')
+            for key, value in param_dict.items():
+                name = key.replace('module.', '')
+                if name in required and own[name].shape != value.shape:
+                    raise ValueError('M2-5 visual tensor shape differs: ' + name)
+            self.m5_metadata = meta
+        elif self.m5_active:
+            raise ValueError('M2-5 checkpoint requires method metadata')
 
         # Preserve old baseline/dense loading, but never silently evaluate a
         # new variant checkpoint with another variant or its default settings.
