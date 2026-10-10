@@ -1,98 +1,163 @@
-"""M2-3 stage-A prompt fitting from a training-only visual feature cache."""
-import os
-import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+"""M2-3 正式阶段 A：条件循环均衡采样，仅训练四个身份 token。"""
 import argparse
+import math
+import os
+import random
+import subprocess
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import numpy as np
 import torch
 import torch.nn.functional as F
+from config import cfg as defaults
 from model.make_model import _read_clip_checkpoint
 from model.m2.deep_text_control import DeepIdentityText
+from utils.m3_artifacts import validate_cache, file_hash
+
+class ConditionCycle:
+    def __init__(self, labels, modalities, platforms, seed):
+        self.generator = torch.Generator().manual_seed(seed)
+        self.pools, self.skipped, self.order = {}, {}, []
+        conditions = sorted(set(zip(modalities.tolist(), platforms.tolist())))
+        for condition in conditions:
+            rows = torch.nonzero((modalities == condition[0]) & (platforms == condition[1]), as_tuple=False).flatten()
+            ids = torch.unique(labels[rows]).tolist()
+            if len(ids) < 2:
+                self.skipped[condition] = len(ids)
+                continue
+            self.pools[condition] = {pid: rows[labels[rows] == pid] for pid in ids}
+        if not self.pools:
+            raise ValueError('no real condition has at least two train identities')
+        self.conditions = sorted(self.pools)
+        self.counts = {condition: 0 for condition in self.conditions}
+
+    def sample(self, ids_per_step, images_per_id):
+        if not self.order:
+            self.order = torch.randperm(len(self.conditions), generator=self.generator).tolist()
+        condition = self.conditions[self.order.pop()]
+        self.counts[condition] += 1
+        pool = self.pools[condition]
+        ids = torch.tensor(sorted(pool))
+        ids = ids[torch.randperm(len(ids), generator=self.generator)[:min(ids_per_step, len(ids))]]
+        sampled = []
+        for pid in ids.tolist():
+            rows = pool[pid]
+            if len(rows) >= images_per_id:
+                index = torch.randperm(len(rows), generator=self.generator)[:images_per_id]
+            else:
+                index = torch.randint(len(rows), (images_per_id,), generator=self.generator)
+            sampled.append(rows[index])
+        return condition, ids, torch.cat(sampled)
+
+def prompt_loss(features, text, images_per_id, temperature):
+    with torch.cuda.amp.autocast(enabled=False):
+        target = torch.arange(text.shape[0], device=text.device).repeat_interleave(images_per_id)
+        logits = F.normalize(features.float(), dim=-1) @ F.normalize(text.float(), dim=-1).t() / temperature
+        image_to_text = F.cross_entropy(logits, target)
+        log_probability = F.log_softmax(logits.t(), dim=1)
+        positive = target[None] == torch.arange(text.shape[0], device=text.device)[:, None]
+        text_to_image = -(log_probability.masked_fill(~positive, 0).sum(1) / positive.sum(1)).mean()
+        return 0.5 * (image_to_text + text_to_image)
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument('--clip', required=True); p.add_argument('--feature-cache', required=True)
-    p.add_argument('--output', required=True); p.add_argument('--steps', type=int, default=10000)
-    p.add_argument('--ids-per-step', type=int, default=16)
-    p.add_argument('--images-per-id', type=int, default=4)
-    p.add_argument('--lr', type=float, default=3.5e-4)
-    p.add_argument('--weight-decay', type=float, default=1e-4)
-    p.add_argument('--warmup', type=int, default=100)
-    p.add_argument('--temperature', type=float, default=0.07)
-    a = p.parse_args(); cache = torch.load(a.feature_cache, map_location='cpu', weights_only=False)
-    features = cache.get('features', cache.get('feature'))
-    labels = cache.get('labels', cache.get('pid'))
-    if features is None or labels is None:
-        raise KeyError('feature cache must contain features/labels (or feature/pid)')
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    feat = F.normalize(features.float(), dim=-1).to(device)
-    labels = torch.as_tensor(labels).long()
-    classes = torch.unique(labels, sorted=True)
-    expected = torch.arange(classes.numel(), dtype=classes.dtype)
-    if not torch.equal(classes.cpu(), expected):
-        raise ValueError('training PID labels must be contiguous 0..N-1 for the text bank')
-    n_cls = int(classes.numel())
-    if n_cls < 2:
-        raise ValueError('prompt stage needs at least two training identities')
-    mod = DeepIdentityText(_read_clip_checkpoint(a.clip), n_cls,
-                           train_id_tokens=True).to(device)
-    with torch.no_grad():
-        mod.id_bank.normal_(mean=0.0, std=0.02)
-    # Stage A trains S1..S4 only.  D1..D4 remain the fixed X embedding and
-    # deep contexts are not part of this stage.
-    opt = torch.optim.Adam([mod.id_bank], lr=a.lr, weight_decay=a.weight_decay)
-    mod.train(); updates = 0
-    rows_by_id = [torch.nonzero(labels == i, as_tuple=False).flatten() for i in range(n_cls)]
-    # §2.4 samples one real modality×platform condition per update.  The
-    # fallback keeps old caches usable but records that they lacked metadata.
-    cond = None
-    if 'modality' in cache and 'platform' in cache:
-        cond = {}
-        for i, (m, pform) in enumerate(zip(cache['modality'], cache['platform'])):
-            cond.setdefault((int(m), int(pform)), []).append(i)
-        cond = {k: torch.tensor(v, dtype=torch.long) for k, v in cond.items()
-                if len(torch.unique(labels[v])) >= 2}
-    if not cond:
-        cond = {('all', 'all'): torch.arange(labels.numel())}
-    while updates < a.steps:
-        pool = cond[list(cond)[int(torch.randint(len(cond), (1,)))]]
-        pool_ids = torch.unique(labels[pool])
-        k = min(a.ids_per_step, len(pool_ids))
-        if k < 2:
-            raise ValueError('a valid condition has fewer than two identities')
-        ids = pool_ids[torch.randperm(len(pool_ids))[:k]]
-        rows = torch.cat([pool[torch.nonzero(labels[pool] == i, as_tuple=False).flatten()
-                          [torch.randint(int((labels[pool] == i).sum()), (a.images_per_id,))]]
-                          for i in ids])
-        opt.zero_grad()
-        text = mod.prompt_forward(ids)
-        target = torch.arange(k, device=device).repeat_interleave(a.images_per_id)
-        logits = feat[rows.to(device)] @ text.t() / a.temperature
-        loss_i2t = F.cross_entropy(logits, target)
-        # Multi-positive mean log-probability, §2.4: do not mark other
-        # same-identity images as negatives in the text-to-image direction.
-        log_t2i = F.log_softmax(logits.t(), dim=1)
-        positive = target.unsqueeze(0) == torch.arange(k, device=device).unsqueeze(1)
-        loss_t2i = -(log_t2i * positive).sum(1).div(positive.sum(1)).mean()
-        loss_id = (loss_i2t + loss_t2i) * 0.5
-        loss_id.backward()
-        torch.nn.utils.clip_grad_norm_([mod.id_bank], 1.0)
-        updates += 1
-        if updates <= a.warmup:
-            lr = a.lr * updates / max(1, a.warmup)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config-file', default='')
+    parser.add_argument('--clip')
+    parser.add_argument('--data-root')
+    parser.add_argument('--feature-cache')
+    parser.add_argument('--output')
+    parser.add_argument('--steps', type=int)
+    parser.add_argument('--ids-per-step', type=int)
+    parser.add_argument('--images-per-id', type=int)
+    parser.add_argument('--lr', type=float)
+    parser.add_argument('--weight-decay', type=float)
+    parser.add_argument('--warmup', type=int)
+    parser.add_argument('--temperature', type=float)
+    parser.add_argument('--seed', type=int)
+    parser.add_argument('--device', default='cuda')
+    args = parser.parse_args()
+    cfg = defaults.clone()
+    if args.config_file:
+        cfg.merge_from_file(args.config_file)
+    for arg, key in [('steps', 'MAX_UPDATES'), ('ids_per_step', 'IDENTITIES_PER_STEP'),
+                     ('images_per_id', 'IMAGES_PER_ID'), ('lr', 'LEARNING_RATE'),
+                     ('weight_decay', 'WEIGHT_DECAY'), ('warmup', 'WARMUP_UPDATES'),
+                     ('temperature', 'TEMPERATURE')]:
+        value = getattr(args, arg)
+        if value is not None:
+            setattr(cfg.PROMPT_STAGE, key, value)
+    if not cfg.PROMPT_STAGE.CONDITION_BALANCED:
+        raise ValueError('M2-3 requires formal condition-balanced prompt sampling')
+    clip = args.clip or cfg.M2.CLIP_PATH
+    cache_path = args.feature_cache or cfg.M2.FEATURE_CACHE
+    output = args.output or cfg.M2.TEXT_BANK
+    root = args.data_root or cfg.DATASETS.ROOT_DIR
+    seed = cfg.SOLVER.SEED if args.seed is None else args.seed
+    cfg.MODEL.PRETRAIN_PATH = clip
+    cfg.M2.CLIP_PATH = clip
+    cfg.M2.FEATURE_CACHE = cache_path
+    cfg.M2.TEXT_BANK = cfg.M2.ID_PROMPT_WEIGHT = cfg.M2.DEEP_CONTEXT_INIT = output
+    cfg.DATASETS.ROOT_DIR = root
+    cfg.SOLVER.SEED = seed
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    device = torch.device(args.device)
+    cache = torch.load(cache_path, map_location='cpu', weights_only=False)
+    pid_map = validate_cache(cache, root, cfg.DATASETS.SUBDIR, clip)
+    sampler = ConditionCycle(cache['labels'], cache['modality'], cache['platform'], seed)
+    print('阶段 A 有效条件:', sampler.conditions, '少于两个身份的跳过条件:', sampler.skipped)
+    model = DeepIdentityText(_read_clip_checkpoint(clip), len(pid_map), train_id_tokens=True).to(device)
+    model.train()
+    stage = cfg.PROMPT_STAGE
+    optimizer = torch.optim.Adam([model.id_bank], lr=stage.LEARNING_RATE, weight_decay=stage.WEIGHT_DECAY)
+    features = cache['features'].float().to(device)
+    updates = 0
+    while updates < stage.MAX_UPDATES:
+        condition, ids, rows = sampler.sample(stage.IDENTITIES_PER_STEP, stage.IMAGES_PER_ID)
+        step = updates + 1
+        if stage.WARMUP_UPDATES and step <= stage.WARMUP_UPDATES:
+            lr = stage.LEARNING_RATE * step / stage.WARMUP_UPDATES
         else:
-            progress = (updates - a.warmup) / max(1, a.steps - a.warmup)
-            lr = a.lr * 0.5 * (1.0 + torch.cos(torch.tensor(progress * 3.1415926535))).item()
-        for group in opt.param_groups:
+            progress = (step - stage.WARMUP_UPDATES) / max(1, stage.MAX_UPDATES - stage.WARMUP_UPDATES)
+            lr = stage.LEARNING_RATE * 0.5 * (1 + math.cos(math.pi * progress))
+        for group in optimizer.param_groups:
             group['lr'] = lr
-        opt.step()
-        if updates % 1000 == 0:
-            print('step={} loss_id={:.5f} lr={:.7f}'.format(updates, loss_id.item(), lr))
+        optimizer.zero_grad()
+        loss = prompt_loss(features[rows.to(device)], model.prompt_forward(ids.to(device)),
+                           stage.IMAGES_PER_ID, stage.TEMPERATURE)
+        if not torch.isfinite(loss):
+            raise RuntimeError('non-finite prompt loss; no final artifact is exported')
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_([model.id_bank], 1.0)
+        optimizer.step()
+        updates += 1
+        if updates % 1000 == 0 or updates == stage.MAX_UPDATES:
+            print('阶段 A update={} loss={:.5f} lr={:.7f}'.format(updates, loss.item(), lr))
+    model.eval()
     with torch.no_grad():
-        anchors = mod.prompt_forward(torch.arange(n_cls)).detach()
-    os.makedirs(os.path.dirname(os.path.abspath(a.output)), exist_ok=True)
-    torch.save({'id_tokens': mod.id_bank.detach().cpu(), 'anchors': anchors.cpu(),
-                'steps': updates, 'template': 'D slots before four ID slots',
-                'pid_values': classes.cpu()}, a.output)
-    print('saved {}'.format(a.output))
+        anchors = torch.cat([model.prompt_forward(ids.to(device)).cpu()
+                             for ids in torch.arange(len(pid_map)).split(32)])
+        error = 0.0
+        for ids in torch.arange(len(pid_map)).split(32):
+            text = model(ids.to(device), model.context_init).cpu()
+            torch.testing.assert_close(text, anchors[ids], rtol=1e-4, atol=1e-5)
+            error = max(error, (text - anchors[ids]).abs().max().item())
+    os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
+    commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'],
+                cwd=str(Path(__file__).resolve().parents[2]), text=True).strip()
+    torch.save({'variant': 'deep_text_c0_control', 'implementation': 'm2-3-audit-v2',
+                'base_commit': 'a8349abeb5fb62b5f7d233e33202d1ef1d113b42',
+                'code_commit': commit, 'config': cfg.dump(),
+                'actual_iterations': updates, 'optimizer_updates': updates, 'amp_skips': 0,
+                'id_tokens': model.id_bank.detach().cpu(), 'anchors': anchors,
+                'context_init': model.context_init.cpu(), 'signature': model.signature,
+                'updates': updates, 'stage_config': dict(stage), 'seed': seed,
+                'metadata': cache['metadata'], 'feature_cache_sha256': file_hash(cache_path),
+                'condition_updates': sampler.counts, 'skipped_conditions': sampler.skipped,
+                'init_text_max_abs_error': error}, output)
+    print('已导出最终 prompt 工件:', output, '更新数:', updates, 't(C0)=t0 最大误差:', error)
 
-if __name__ == '__main__': main()
+if __name__ == '__main__':
+    main()

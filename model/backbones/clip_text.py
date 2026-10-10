@@ -131,6 +131,8 @@ class CLIPTextEncoder(nn.Module):
         CLIP weights stay frozen.  Slot replacement happens before each block,
         after block 0 has processed the normal template.
         """
+        if tuple(contexts.shape) != (len(self.resblocks) - 1, len(slot_indices), self.width):
+            raise ValueError('deep context shape does not match text layers/slots')
         x = embeddings + self.positional_embedding.to(embeddings.dtype)
         x = x.permute(1, 0, 2)
         slots = torch.as_tensor(slot_indices, device=x.device, dtype=torch.long)

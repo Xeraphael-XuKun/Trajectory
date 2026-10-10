@@ -1,66 +1,76 @@
-"""M2-3 identity prompt bank and shared deep text context."""
-import os
+"""M2-3 frozen identity text; the controller solely owns shared contexts."""
 import torch
-import torch.nn as nn
+from torch import nn
+import torch.nn.functional as F
+from pathlib import Path
 from model.backbones.clip_text import CLIPTextEncoder, build_tokenizer, SOT, EOT
+from utils.m3_artifacts import file_hash
 
 class DeepIdentityText(nn.Module):
-    """Frozen CLIP tower with four pre-ID slots and four identity slots."""
-    def __init__(self, clip_state, num_classes, bank_path=None, n_ctx=4,
-                 layers=11, context_length=77, train_id_tokens=False):
-        super().__init__(); self.n_ctx, self.layers = int(n_ctx), int(layers)
-        self.text = CLIPTextEncoder(); self.text.load_clip(clip_state); self.text.freeze()
-        tok = build_tokenizer(); placeholder = tok.encode('X')
+    def __init__(self, clip_state, num_classes, n_ctx=4, train_id_tokens=False):
+        super().__init__()
+        if n_ctx != 4:
+            raise ValueError('M2-3 defines four D slots and four identity slots')
+        self.text = CLIPTextEncoder()
+        self.text.load_clip(clip_state)
+        self.text.freeze().eval()
+        tok = build_tokenizer()
+        placeholder = tok.encode('X')
         if len(placeholder) != 1:
-            raise ValueError('M2-3 X placeholder must be one tokenizer token')
-        ph = placeholder[0]; prefix = [SOT] + tok.encode('a photo of a')
-        ids = prefix + [ph] * (2 * self.n_ctx) + tok.encode('person .') + [EOT]
-        if len(ids) > context_length: raise ValueError('M2-3 template exceeds CLIP context length')
-        self.register_buffer('token_ids', torch.tensor(ids + [0] * (context_length-len(ids)), dtype=torch.long))
-        self.d_slots = tuple(range(len(prefix), len(prefix) + self.n_ctx))
-        self.s_slots = tuple(range(len(prefix) + self.n_ctx, len(prefix) + 2*self.n_ctx))
-        self.eot_index = len(ids)-1
+            raise ValueError('X must be one tokenizer token')
+        # Use the complete real template, including tokenizer punctuation.
+        ids = [SOT] + tok.encode('a photo of a X X X X X X X X person.') + [EOT]
+        slots = [i for i, token in enumerate(ids) if token == placeholder[0]]
+        if len(slots) != 8:
+            raise ValueError('M2-3 template must expose eight slots')
+        self.d_slots, self.s_slots = tuple(slots[:4]), tuple(slots[4:])
+        if max(self.d_slots) >= min(self.s_slots):
+            raise ValueError('all D slots must precede all identity slots')
+        self.eot_index = len(ids) - 1
+        self.register_buffer('token_ids', torch.tensor(ids + [0] * (77 - len(ids))).long())
+        self.id_bank = nn.Parameter(torch.empty(num_classes, 4, 512), requires_grad=train_id_tokens)
+        nn.init.normal_(self.id_bank, std=0.02)
+        self.register_buffer('text_anchors', torch.zeros(num_classes, 512))
         with torch.no_grad():
-            emb = self.text.token_embedding(self.token_ids.unsqueeze(0)); hidden = self._hidden_states(emb)
-            # C_l is the input to text block l (l=2..12), i.e. Z_1..Z_11.
-            # hidden[12] is Z_12, after the final block, and must not be used.
-            init = torch.stack([h[0, list(self.d_slots)] for h in hidden[1:12]], 0)
-        if init.shape[0] != 11: raise ValueError('M2-3 requires 11 deep text contexts')
-        self.contexts = nn.Parameter(init.clone())
-        self.id_bank = nn.Parameter(
-            torch.zeros(int(num_classes), self.n_ctx, 512),
-            requires_grad=bool(train_id_tokens))
-        self.register_buffer('text_anchors', torch.zeros(int(num_classes), 512))
-        x = self.text.token_embedding.weight.detach()[ph]
-        self.register_buffer('id_init', x[None,None,:].expand(int(num_classes),self.n_ctx,-1).clone(), persistent=False)
-        if bank_path:
-            if not os.path.exists(bank_path): raise FileNotFoundError('M2-3 TEXT_BANK missing: {}'.format(bank_path))
-            bank = torch.load(bank_path, map_location='cpu', weights_only=False)
-            if not hasattr(bank.get('id_tokens'), 'shape') or not hasattr(bank.get('anchors'), 'shape') or tuple(bank['id_tokens'].shape) != tuple(self.id_bank.shape) or tuple(bank['anchors'].shape) != tuple(self.text_anchors.shape):
-                raise ValueError('M2-3 text bank shape mismatch')
-            with torch.no_grad():
-                self.id_bank.copy_(bank['id_tokens'])
-                self.text_anchors.copy_(bank['anchors'])
-        else: self.id_bank.data.copy_(self.id_init)
+            emb = self.text.token_embedding(self.token_ids[None])
+            x = (emb + self.text.positional_embedding).permute(1, 0, 2)
+            hidden = []
+            for layer, block in enumerate(self.text.resblocks):
+                if layer > 0:
+                    hidden.append(x[list(self.d_slots), 0].clone())
+                x = block(x, self.text.attn_mask)
+        self.register_buffer('context_init', torch.stack(hidden), persistent=False)
+        bpe = Path(__file__).resolve().parents[1] / 'backbones/bpe_simple_vocab_16e6.txt.gz'
+        self.signature = {'template': 'a photo of a D D D D S S S S person.',
+                          'token_ids': self.token_ids.tolist(), 'd_slots': list(self.d_slots),
+                          's_slots': list(self.s_slots), 'eot': self.eot_index,
+                          'context_length': 77, 'tokenizer_sha256': file_hash(bpe)}
 
-    def _hidden_states(self, embeddings):
-        x=(embeddings+self.text.positional_embedding.to(embeddings.dtype)).permute(1,0,2); out=[x.permute(1,0,2)]
-        for blk in self.text.resblocks:
-            x=blk(x,self.text.attn_mask.to(x.dtype)); out.append(x.permute(1,0,2))
-        return out
+    def train(self, mode=True):
+        super().train(mode)
+        self.text.eval()
+        return self
+
+    def load_bank(self, bank):
+        with torch.no_grad():
+            self.id_bank.copy_(bank['id_tokens'])
+            self.text_anchors.copy_(bank['anchors'])
+        self.id_bank.requires_grad_(False)
+        torch.testing.assert_close(bank['context_init'].float(), self.context_init.cpu(), rtol=1e-4, atol=1e-5)
+
+    def splice(self, ids):
+        ids = ids.to(device=self.token_ids.device, dtype=torch.long)
+        emb = self.text.token_embedding(self.token_ids[None].expand(ids.numel(), -1)).clone()
+        emb[:, self.s_slots] = self.id_bank.index_select(0, ids)
+        eot = torch.full((ids.numel(),), self.eot_index, dtype=torch.long, device=ids.device)
+        return emb, eot
 
     def prompt_forward(self, ids):
-        """Stage-A P-ID encoding with fixed D=X slots and no deep replacement."""
-        ids = ids.long().to(self.token_ids.device)
-        emb = self.text.token_embedding(
-            self.token_ids.unsqueeze(0).expand(ids.numel(), -1)).clone()
-        emb[:, self.s_slots] = self.id_bank.index_select(0, ids).to(emb.dtype)
-        eot = torch.full((ids.numel(),), self.eot_index, dtype=torch.long,
-                         device=ids.device)
-        return torch.nn.functional.normalize(self.text(emb, eot).float(), dim=-1)
+        with torch.cuda.amp.autocast(enabled=False):
+            emb, eot = self.splice(ids)
+            return F.normalize(self.text(emb.float(), eot).float(), dim=-1)
 
-    def forward(self, ids):
-        ids=ids.long().to(self.token_ids.device); emb=self.text.token_embedding(self.token_ids.unsqueeze(0).expand(ids.numel(),-1)).clone()
-        emb[:,self.s_slots]=self.id_bank.index_select(0,ids).to(emb.dtype)
-        eot=torch.full((ids.numel(),),self.eot_index,dtype=torch.long,device=ids.device)
-        return torch.nn.functional.normalize(self.text.forward_deep(emb,eot,self.d_slots,self.contexts).float(),dim=-1)
+    def forward(self, ids, contexts):
+        with torch.cuda.amp.autocast(enabled=False):
+            emb, eot = self.splice(ids)
+            return F.normalize(self.text.forward_deep(emb.float(), eot, self.d_slots, contexts).float(), dim=-1)

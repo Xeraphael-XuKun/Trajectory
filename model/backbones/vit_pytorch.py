@@ -675,6 +675,10 @@ class TransReID(nn.Module):
             mod_idx = (modal_id - 1).clamp_min(0)
             mod_keep = (modal_id > 0).to(x.dtype).reshape(-1, 1, 1)
 
+        control_kv = None
+        if self.deep_c0_controller is not None:
+            self.deep_c0_controller.last_stats = []
+            control_kv = self.deep_c0_controller.key_values()
         previous_velocity = None
         previous_previous_velocity = None
         for i, blk in enumerate(self.blocks):
@@ -693,7 +697,7 @@ class TransReID(nn.Module):
                     i, previous_velocity, previous_previous_velocity,
                     gate=trajectory_gate)
                 if self.deep_c0_controller is not None:
-                    correction = self.deep_c0_controller(i, previous_velocity, correction)
+                    correction = self.deep_c0_controller(i, previous_velocity, correction, control_kv)
                 x = x + correction
             block_input = x
             x = blk(x, chart=chart)

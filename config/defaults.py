@@ -18,6 +18,8 @@ _C = CN()
 # -----------------------------------------------------------------------------
 _C.M2 = CN()
 _C.M2.ENABLED = False
+_C.M2.DEPLOY_ONLY = False
+_C.M2.RESUME = ''
 _C.M2.VARIANT = 'none'
 _C.M2.CLIP_PATH = ''
 _C.M2.FREEZE_VISUAL_PROJECTION = True

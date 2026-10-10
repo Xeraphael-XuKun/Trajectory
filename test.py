@@ -33,6 +33,9 @@ if __name__ == "__main__":
     if args.config_file != "":
         cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+    if cfg.M2.ENABLED and cfg.M2.VARIANT == 'deep_text_c0_control':
+        # Keep the learned visual controller; remove training-only artifacts.
+        cfg.M2.DEPLOY_ONLY = True
     cfg.freeze()
 
     setup_cuda_visible_devices(cfg)

@@ -74,18 +74,38 @@ class DenseCrossLayerTokenTrajectory(nn.Module):
             correction = correction * gate
         return correction
 
+
 class DeepTextC0Controller(nn.Module):
-    """Shared deep-context modulation for the M2-3 C0 extension."""
+    """Positive amplitude modulation; one owner of the shared C_l bank."""
     def __init__(self, depth, num_tokens, embed_dim=768, context_dim=512,
                  n_ctx=4, width=64, rho=0.25):
-        super().__init__(); self.depth=int(depth); self.num_tokens=int(num_tokens); self.rho=float(rho)
-        self.context=nn.Parameter(torch.empty(depth-1,n_ctx,context_dim)); nn.init.normal_(self.context,std=.02)
-        self.q=nn.Linear(embed_dim,width,bias=False); self.k=nn.Linear(context_dim,width,bias=False)
-        self.v=nn.Linear(context_dim,width,bias=False); self.o=nn.Linear(width,embed_dim,bias=False)
+        super().__init__()
+        self.depth, self.num_tokens, self.rho = int(depth), int(num_tokens), float(rho)
+        self.context = nn.Parameter(torch.zeros(depth - 1, n_ctx, context_dim))
+        self.q = nn.Linear(embed_dim, width, bias=False)
+        self.k = nn.Linear(context_dim, width, bias=False)
+        self.v = nn.Linear(context_dim, width, bias=False)
+        self.o = nn.Linear(width, embed_dim, bias=False)
         nn.init.zeros_(self.o.weight)
-    def forward(self, layer, velocity, correction):
-        if not 1 <= int(layer) < self.depth: raise IndexError('controller layer outside [1, depth)')
-        u=F.layer_norm(velocity.float(),(velocity.shape[-1],)); c=F.layer_norm(self.context[int(layer)-1].float(),(self.context.shape[-1],))
-        a=torch.softmax(self.q(u) @ self.k(c).transpose(-1,-2)/(self.q.out_features**.5),dim=-1)
-        mult=1+self.rho*torch.tanh(self.o(a @ self.v(c)))
-        return correction*mult.to(correction.dtype)
+        self.last_stats = []
+
+    def key_values(self):
+        # Once per image batch, attached to autograd during training.
+        with torch.cuda.amp.autocast(enabled=False):
+            c = F.layer_norm(self.context.float(), (self.context.shape[-1],))
+            return self.k(c), self.v(c)
+
+    def forward(self, layer, velocity, correction, key_values=None):
+        with torch.cuda.amp.autocast(enabled=False):
+            layer = int(layer) - 1
+            key, value = self.key_values() if key_values is None else key_values
+            u = F.layer_norm(velocity.float(), (velocity.shape[-1],))
+            attention = torch.softmax(self.q(u) @ key[layer].t() / self.q.out_features ** 0.5, dim=-1)
+            multiplier = 1 + self.rho * torch.tanh(self.o(attention @ value[layer]))
+            result = correction * multiplier.to(correction.dtype)
+            if self.training:
+                with torch.no_grad():
+                    ratio = result.float().norm() / correction.float().norm().clamp_min(1e-12)
+                    self.last_stats.append(torch.stack([multiplier.mean(), multiplier.std(),
+                                                        multiplier.min(), multiplier.max(), ratio]))
+            return result

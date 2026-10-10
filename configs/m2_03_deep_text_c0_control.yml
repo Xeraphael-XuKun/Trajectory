@@ -1,5 +1,4 @@
-# C0: Velocity-only control.
-# Fixed llmpar + CLIP normalization; inherits L_C_T training settings; VTC off.
+# Standalone M2-3 configuration: original C0 settings plus shared deep control.
 
 MODEL:
   PRETRAIN_CHOICE: 'imagenet'
@@ -17,13 +16,26 @@ MODEL:
   TOKEN_TRAJECTORY_ACCEL_MIX: 0.0
   TOKEN_TRAJECTORY_VARIANT: 'dense'
   PE_FREEZE_BASE: False
+  PE_TYPE: 'learnable'
+  DIST_TRAIN: False
+  SIE_CAMERA: False
+  SIE_VIEW: False
+  VPR: False
+  MOD_DELTA: False
+  CE_SPLIT_VIEW: False
+  CE_SPLIT_MODALITY: False
   TEXT_ALIGN: False
 
 M2:
   ENABLED: True
   VARIANT: 'deep_text_c0_control'
   CLIP_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
-  TEXT_BANK: '/mnt/cache/wanghanzhi/XK/Trajectory-m2-c/cache/m2_03_prompt_bank.pt'
+  FEATURE_CACHE: '/mnt/cache/wanghanzhi/XK/m2-c/artifacts/train_clip_features.pt'
+  TEXT_BANK: '/mnt/cache/wanghanzhi/XK/m2-c/artifacts/deep_slot_prompt_bank.pt'
+  ID_PROMPT_WEIGHT: '/mnt/cache/wanghanzhi/XK/m2-c/artifacts/deep_slot_prompt_bank.pt'
+  DEEP_CONTEXT_INIT: '/mnt/cache/wanghanzhi/XK/m2-c/artifacts/deep_slot_prompt_bank.pt'
+  FREEZE_VISUAL_PROJECTION: True
+  DEPLOY_ONLY: False
   TEMPERATURE: 0.07
   DEEP_CONTEXT_LENGTH: 4
   CONTROL_WIDTH: 64
@@ -35,6 +47,7 @@ M2:
 
 PROMPT_STAGE:
   MAX_UPDATES: 10000
+  CONDITION_BALANCED: True
   IDENTITIES_PER_STEP: 16
   IMAGES_PER_ID: 4
   LEARNING_RATE: 0.00035
@@ -56,11 +69,15 @@ DATASETS:
   ROOT_DIR: ('/mnt/cache/wanghanzhi/Datasets')
   MODALITIES: ['RGB', 'IR', 'Thermal']
   AERIAL_CAMS: [5, 6]
+  PROTOCOL: 'ALL'
+  SUBDIR: 'WHU-MARS'
 
 DATALOADER:
   SAMPLER: 'PKM'
   NUM_INSTANCE: 4
   NUM_WORKERS: 8
+  SYNC_FRAMES: False
+  TIE_AUGMENTATION: False
 
 SOLVER:
   OPTIMIZER_NAME: 'Adam'
@@ -82,6 +99,9 @@ SOLVER:
   LOSS_TYPE: 'base'
   PE_DELTA_LR_MULT: 1.0
   TEXT_LOSS_WEIGHT: 0.0
+  TWIN_LOSS_WEIGHT: 0.0
+  TNCE_WEIGHT: 0.0
+  MOD_DELTA_ONLY: False
 
 TEST:
   EVAL: True
@@ -90,5 +110,7 @@ TEST:
   WEIGHT: 'transformer_60.pth'
   NECK_FEAT: 'after'
   FEAT_NORM: 'yes'
+  METRIC: 'sysu'
+  TOP_K_EVAL: 0
 
-OUTPUT_DIR: './logs/m2_03_deep_text_c0_control_seed1234'
+OUTPUT_DIR: '/mnt/cache/wanghanzhi/XK/m2-c/logs/student'

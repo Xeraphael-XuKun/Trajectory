@@ -148,14 +148,15 @@ def deep_text_identity_loss(aux, tau=0.07, text_weight=0.5, anchor_weight=0.1):
     """
     if aux is None or aux.get('kind') != 'deep_text':
         return None, {}
-    z = F.normalize(aux['visual'].float(), dim=-1)
-    t = F.normalize(aux['text'].float(), dim=-1)
-    y = aux['targets'].long()
-    loss_it = F.cross_entropy((z @ t.t()) / float(tau), y)
-    anchor = aux.get('anchor')
-    loss_anchor = z.new_zeros(()) if anchor is None else (1 - (t * F.normalize(anchor.float(), dim=-1)).sum(-1)).mean()
-    total = float(text_weight) * loss_it + float(anchor_weight) * loss_anchor
+    with amp.autocast(enabled=False):
+        z = F.normalize(aux['visual'].float(), dim=-1)
+        t = F.normalize(aux['text'].float(), dim=-1)
+        loss_it = F.cross_entropy((z @ t.t()) / float(tau), aux['targets'].long())
+        anchor = F.normalize(aux['anchor'].detach().float(), dim=-1)
+        loss_anchor = (1 - (t * anchor).sum(-1)).mean()
+        total = float(text_weight) * loss_it + float(anchor_weight) * loss_anchor
     return total, {'loss_it': loss_it.detach(), 'loss_anchor': loss_anchor.detach()}
+
 
 
 def ce_split_target(target_rep, camids, n_modalities, aerial_cams,
@@ -487,7 +488,16 @@ def do_train(cfg,
 
     group_size = cfg.DATALOADER.NUM_INSTANCE
 
-    for epoch in range(1, epochs + 1):
+    m3_active = model_meta.m2_deep_text
+    m3_iterations = m3_updates = m3_amp_skips = 0
+    start_epoch = 1
+    if m3_active and cfg.M2.DEPLOY_ONLY:
+        raise ValueError('DEPLOY_ONLY is for evaluation, not main training')
+    if m3_active and cfg.M2.RESUME:
+        from utils.m3_checkpoint import restore_training
+        start_epoch, m3_iterations, m3_updates, m3_amp_skips = restore_training(
+            cfg.M2.RESUME, model_meta, optimizer, scheduler, scaler)
+    for epoch in range(start_epoch, epochs + 1):
         start_time = time.time()
         loss_meter.reset()
         acc_meter.reset()
@@ -568,7 +578,7 @@ def do_train(cfg,
                     last_text_stats = text_stats
 
                 if (aux is not None and aux.get('kind') == 'deep_text'
-                        and deep_text_weight > 0):
+                        and (deep_text_weight > 0 or deep_anchor_weight > 0)):
                     loss_deep, deep_stats = deep_text_identity_loss(
                         aux, tau=float(cfg.M2.TEMPERATURE),
                         text_weight=deep_text_weight,
@@ -648,8 +658,23 @@ def do_train(cfg,
                 display_loss = total_loss.detach()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if m3_active and n_iter % max(1, len(train_loader) // 10) == 0:
+                controller = model_meta.base.deep_c0_controller
+                stats = torch.stack(controller.last_stats).cpu().tolist()
+                drift = (controller.context.detach() - model_meta.deep_identity.context_init).norm().item()
+                grad = {key: (parameter.grad.norm().item() if parameter.grad is not None else 0.0)
+                        for key, parameter in controller.named_parameters()}
+                logger.info('M2-3 per_layer(mean,std,min,max,R*/R)=%s context_drift=%.6g gradients=%s',
+                            stats, drift, grad)
+            scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
+            if m3_active:
+                m3_iterations += 1
+                if scaler.get_scale() >= scale_before:
+                    m3_updates += 1
+                else:
+                    m3_amp_skips += 1
 
             if use_aux_modules:
                 with torch.no_grad():
@@ -833,7 +858,14 @@ def do_train(cfg,
                 )
             )
 
-        if epoch % checkpoint_period == 0:
+        if m3_active:
+            logger.info('M2-3 cumulative iterations=%s optimizer_updates=%s AMP_skips=%s',
+                        m3_iterations, m3_updates, m3_amp_skips)
+        if epoch % checkpoint_period == 0 and m3_active:
+            from utils.m3_checkpoint import save_training
+            save_training(cfg.OUTPUT_DIR, cfg.MODEL.NAME, epoch, model_meta,
+                          optimizer, scheduler, scaler, m3_iterations, m3_updates, m3_amp_skips)
+        elif epoch % checkpoint_period == 0:
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
                     torch.save(model.state_dict(), os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))

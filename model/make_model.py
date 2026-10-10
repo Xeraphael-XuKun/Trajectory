@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 from .backbones.vit_pytorch import vit_base_in, vit_base_clip, vit_ics_lup
@@ -115,6 +116,26 @@ class build_transformer(nn.Module):
 
         m2 = cfg.M2
         self.m2_deep_text = bool(m2.ENABLED and m2.VARIANT == 'deep_text_c0_control')
+        self.m2_deploy = bool(m2.DEPLOY_ONLY)
+        if m2.ENABLED and not self.m2_deep_text:
+            raise ValueError('this worktree implements M2.VARIANT=deep_text_c0_control')
+        if self.m2_deep_text:
+            if (not self.use_token_trajectory or cfg.MODEL.TOKEN_TRAJECTORY_VARIANT != 'dense' or
+                    cfg.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX != 0.0):
+                raise ValueError('M2-3 requires velocity-only dense C0')
+            if (cfg.MODEL.TEXT_ALIGN or cfg.MODEL.VPR or cfg.MODEL.MOD_DELTA or
+                    cfg.MODEL.CE_SPLIT_VIEW or cfg.MODEL.CE_SPLIT_MODALITY or
+                    cfg.MODEL.SIE_CAMERA or cfg.MODEL.SIE_VIEW or cfg.MODEL.PE_FREEZE_BASE or
+                    cfg.MODEL.PE_TYPE != 'learnable' or cfg.SOLVER.LOSS_TYPE != 'base' or
+                    cfg.MODEL.IF_LABELSMOOTH != 'off' or cfg.DATALOADER.SYNC_FRAMES or
+                    cfg.DATALOADER.TIE_AUGMENTATION or cfg.MODEL.DIST_TRAIN or
+                    any((cfg.SOLVER.TEXT_LOSS_WEIGHT, cfg.SOLVER.TWIN_LOSS_WEIGHT, cfg.SOLVER.TNCE_WEIGHT))):
+                raise ValueError('M2-3 must use the original independent CE/Triplet training chain')
+            if (not m2.FREEZE_VISUAL_PROJECTION or not m2.SHARE_CONTROL_PROJECTIONS or
+                    not m2.ZERO_INIT_CONTROL_OUTPUT or m2.DEEP_CONTEXT_LENGTH != 4):
+                raise ValueError('M2-3 requires frozen P0, four contexts, shared projections and zero WO')
+            if list(cfg.DATASETS.MODALITIES) != ['RGB', 'IR', 'Thermal'] or list(cfg.DATASETS.AERIAL_CAMS) != [5, 6]:
+                raise ValueError('M2-3 requires separate RGB/IR/Thermal and camera mapping [5,6]')
         self.base=factory[cfg.MODEL.TRANSFORMER_TYPE](img_size=cfg.INPUT.SIZE_TRAIN, sie_xishu=cfg.MODEL.SIE_COE,
                                                         camera=camera_num, view=view_num, stride_size=cfg.MODEL.STRIDE_SIZE, drop_path_rate=cfg.MODEL.DROP_PATH,
                                                         drop_rate= cfg.MODEL.DROP_OUT,
@@ -140,7 +161,7 @@ class build_transformer(nn.Module):
                                                         token_trajectory_ema_decay=cfg.MODEL.TOKEN_TRAJECTORY_EMA_DECAY,
                                                         token_trajectory_hidden_dim=cfg.MODEL.TOKEN_TRAJECTORY_HIDDEN_DIM,
                                                         token_trajectory_rank=cfg.MODEL.TOKEN_TRAJECTORY_RANK,
-                                                        deep_c0_control=self.m2_deep_text,
+                                                        deep_c0_control=False,
                                                         deep_c0_context_length=cfg.M2.DEEP_CONTEXT_LENGTH,
                                                         deep_c0_control_width=cfg.M2.CONTROL_WIDTH,
                                                         deep_c0_control_rho=cfg.M2.CONTROL_RHO,
@@ -148,8 +169,6 @@ class build_transformer(nn.Module):
                                                         vpr_rank=cfg.MODEL.VPR_RANK,
                                                         vpr_conditional=cfg.MODEL.VPR_CONDITIONAL,
                                                         vpr_zero_mean=cfg.MODEL.VPR_ZERO_MEAN)
-        if self.m2_deep_text and m2.FREEZE_VISUAL_PROJECTION:
-            self.base.clip_proj.requires_grad_(False)
 
         if self.use_mod_delta:
             print('Mod-delta: banks for {} (reference {} gets none), {:,} params'
@@ -270,25 +289,36 @@ class build_transformer(nn.Module):
                 'setting it otherwise would be silently ignored')
         if self.m2_deep_text:
             if getattr(self.base, 'clip_proj', None) is None:
-                raise ValueError('M2-3 deep text needs vit_base_clip visual projection')
-            if not m2.CLIP_PATH:
-                raise ValueError('M2-3 deep text needs M2.CLIP_PATH')
-            if not m2.TEXT_BANK:
-                raise ValueError('M2-3 requires M2.TEXT_BANK from the completed stage-A prompt run')
-            from .m2.deep_text_control import DeepIdentityText
-            clip_sd = _read_clip_checkpoint(m2.CLIP_PATH)
+                raise ValueError('M2-3 requires vit_base_clip')
+            from .backbones.token_trajectory import DeepTextC0Controller
             with torch.random.fork_rng(devices=[]):
-                self.deep_identity = DeepIdentityText(
-                    clip_sd, num_classes=self.num_classes,
-                    bank_path=m2.TEXT_BANK or None,
-                    n_ctx=m2.DEEP_CONTEXT_LENGTH)
-            # The visual controller and text tower must backpropagate through
-            # one Parameter object.  Replacing the controller's constructor
-            # context also keeps the C0-side module free of a second context
-            # bank that could drift independently.
-            self.base.deep_c0_controller.context = self.deep_identity.contexts
-            print('M2-3 deep identity text enabled: contexts {}, classes {}'.format(
-                self.deep_identity.contexts.shape[0], self.num_classes))
+                self.base.deep_c0_controller = DeepTextC0Controller(
+                    depth=12, num_tokens=self.base.patch_embed.num_patches + 1,
+                    n_ctx=m2.DEEP_CONTEXT_LENGTH, width=m2.CONTROL_WIDTH, rho=m2.CONTROL_RHO)
+                if not self.m2_deploy:
+                    if cfg.MODEL.PRETRAIN_CHOICE != 'imagenet' or os.path.abspath(cfg.MODEL.PRETRAIN_PATH) != os.path.abspath(m2.CLIP_PATH):
+                        raise ValueError('M2-3 student must start from the same original CLIP as the text tower')
+                    from .m2.deep_text_control import DeepIdentityText
+                    from utils.m3_artifacts import validate_bank, file_hash
+                    self.deep_identity = DeepIdentityText(_read_clip_checkpoint(m2.CLIP_PATH), self.num_classes)
+                    for field in (m2.ID_PROMPT_WEIGHT, m2.DEEP_CONTEXT_INIT):
+                        if field and field != m2.TEXT_BANK:
+                            raise ValueError('M2-3 uses one bundled TEXT_BANK for ID prompts, anchors and deep init')
+                    bank = torch.load(m2.TEXT_BANK, map_location='cpu', weights_only=False)
+                    validate_bank(bank, cfg, self.num_classes, self.deep_identity.signature)
+                    self.deep_identity.load_bank(bank)
+                    with torch.no_grad():
+                        self.base.deep_c0_controller.context.copy_(bank['context_init'])
+                    self.m2_metadata = {'variant': 'deep_text_c0_control',
+                                        'base_commit': 'a8349abeb5fb62b5f7d233e33202d1ef1d113b42',
+                                        'implementation': 'm2-3-audit-v2', 'acceleration_mix': 0.0,
+                                        'rho': m2.CONTROL_RHO, 'control_width': m2.CONTROL_WIDTH,
+                                        'context_length': m2.DEEP_CONTEXT_LENGTH,
+                                        'signature': bank['signature'], 'teacher': bank['metadata'],
+                                        'prompt_sha256': file_hash(m2.TEXT_BANK),
+                                        'prompt_updates': bank['updates'], 'config': cfg.dump()}
+            self.base.clip_proj.requires_grad_(False)
+            print('M2-3 enabled: one shared context bank; deployment-only={}'.format(self.m2_deploy))
 
         if self.text_align:
             from .backbones.clip_text import CLIPTextEncoder, ViewPrompts
@@ -495,10 +525,13 @@ class build_transformer(nn.Module):
                         .format(global_feat.shape[0], text_target.numel()))
                 ids, inverse = torch.unique(text_target, sorted=True,
                                             return_inverse=True)
-                text = self.deep_identity(ids)
-                visual = torch.nn.functional.normalize(
-                    global_feat.float() @ self.base.clip_proj.float(), dim=-1)
-                anchor = self.deep_identity.text_anchors.index_select(0, ids).to(visual.device)
+                if self.deep_identity is None:
+                    raise ValueError('deployment-only M2-3 cannot train without the prompt bank')
+                with torch.cuda.amp.autocast(enabled=False):
+                    text = self.deep_identity(ids, self.base.deep_c0_controller.context)
+                    visual = torch.nn.functional.normalize(
+                        global_feat.float() @ self.base.clip_proj.float(), dim=-1)
+                    anchor = self.deep_identity.text_anchors.index_select(0, ids).to(visual.device)
                 return cls_score, global_feat, feat, {
                     'kind': 'deep_text', 'visual': visual, 'text': text,
                     'anchor': anchor, 'targets': inverse, 'identity_ids': ids,
@@ -606,13 +639,28 @@ class build_transformer(nn.Module):
         first tensor, and a *partially* matching one loaded whatever fit and
         left the rest at random init without a word.
         """
-        param_dict = torch.load(trained_path, map_location='cpu')
+        param_dict = torch.load(trained_path, map_location='cpu', weights_only=False)
+        metadata = param_dict.get('metadata', {})
         if 'state_dict' in param_dict:
             param_dict = param_dict['state_dict']
         own = self.state_dict()
         normalized_keys = {key.replace('module.', '') for key in param_dict}
         control_keys = {key for key in own if 'deep_c0_controller' in key}
         incoming_control = {key for key in normalized_keys if 'deep_c0_controller' in key}
+        if control_keys or incoming_control:
+            if metadata.get('variant') != 'deep_text_c0_control':
+                raise ValueError('M2-3 checkpoint requires a complete method manifest')
+            controller = self.base.deep_c0_controller
+            if controller is None or not self.m2_deep_text:
+                raise ValueError('M2-3 cannot be loaded as original C0')
+            if (controller.rho != metadata['rho'] or controller.q.out_features != metadata['control_width'] or
+                    controller.context.shape[1] != metadata['context_length'] or
+                    self.base.token_trajectory.acceleration_mix != metadata['acceleration_mix']):
+                raise ValueError('M2-3 checkpoint/config controller settings differ')
+            required = {key for key in own if key.startswith(('base.', 'bottleneck.'))}
+            if not required.issubset(normalized_keys):
+                raise ValueError('M2-3 checkpoint is missing trained visual tensors')
+            self.m2_metadata = metadata
         if bool(control_keys) != bool(incoming_control):
             raise ValueError('M2-3 checkpoint/config mismatch: controller is required at inference')
         if control_keys and not control_keys.issubset(normalized_keys):
@@ -645,6 +693,8 @@ class build_transformer(nn.Module):
             own[key].copy_(v)
             loaded += 1
 
+        if control_keys and mismatched:
+            raise ValueError('M2-3 checkpoint tensor shape mismatch: {}'.format(mismatched))
         missing = [k for k in own if k not in {x.replace('module.', '') for x in param_dict}]
         print('Loading pretrained model from {}'.format(trained_path))
         print('  loaded {} / {} tensors | {} classifier rows skipped (identity counts differ)'
