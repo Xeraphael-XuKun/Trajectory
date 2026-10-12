@@ -1,0 +1,16 @@
+{
+  "dataset": "/mnt/cache/wanghanzhi/Datasets/WHU-MARS",
+  "clip": "/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt",
+  "m5_parent": "db8a5c65ba0b7b5f0c62d00d2adb2f5e3bfe1177",
+  "m3_parent": "a432df3cc59c92aab91afdacd43ea1bf81d522fd",
+  "m3_repo": "/mnt/cache/wanghanzhi/XK/m2-c/Trajectory",
+  "m5_teacher": "/mnt/cache/wanghanzhi/XK/m2-e/logs/teacher/conditional_teacher_epoch60.pth",
+  "m5_text": "/mnt/cache/wanghanzhi/XK/m2-e/artifacts/shared_id_text_bank.pt",
+  "m5_prompt": "/mnt/cache/wanghanzhi/XK/m2-e/artifacts/shared_id_prompts_final.pt",
+  "m5_student": "/mnt/cache/wanghanzhi/XK/m2-e/logs/student/transformer_60_student.pth",
+  "m5_config": "/mnt/cache/wanghanzhi/XK/m2-e/logs/student/config_merged.yml",
+  "m3_bank": "/mnt/cache/wanghanzhi/XK/m2-c/artifacts/deep_slot_prompt_bank.pt",
+  "m3_student": "/mnt/cache/wanghanzhi/XK/m2-c/logs/student/transformer_60_student.pth",
+  "c0_student": "/mnt/cache/wanghanzhi/XK/Trajectory/logs/trajectory_extensions_1002/C0_seed1234/transformer_60.pth",
+  "c0_train_log": "/mnt/cache/wanghanzhi/XK/Trajectory/logs/trajectory_extensions_1002/C0_seed1234/train_log_20261001_2359.txt"
+}
