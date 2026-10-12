@@ -89,11 +89,18 @@ def main():
             teacher,teacher_obj=load_teacher(c,500,'cuda')
         else:
             assert local_paths is not None and torch.__version__.startswith('1.13.')
-            # Compatibility is confined to this explicit local preflight.
-            # Formal finetune and its load_teacher remain the original code.
+            # Exercise the E2 constructor with the real R2-enabled config first.
+            # Only the already diagnosed local pos_embed rounding can fall back;
+            # configuration/architecture/source failures must remain failures.
             with torch.random.fork_rng(devices=[]):
-                teacher,_=helper.teacher(local_paths,'cuda')
-            teacher_obj=torch.load(c.M2.TEACHER_WEIGHT,map_location='cpu',weights_only=False)
+                try:
+                    teacher,teacher_obj=load_teacher(c,500,'cuda')
+                except ValueError as exc:
+                    if str(exc)!='M2-5 teacher frozen original visual changed: pos_embed':
+                        raise
+                    teacher,_=helper.teacher(local_paths,'cuda')
+                    teacher_obj=torch.load(c.M2.TEACHER_WEIGHT,map_location='cpu',weights_only=False)
+        result['e2_production_teacher_constructor_exercised']=True
         result['teacher_local_compatibility']=getattr(teacher,'diagnostic_compatibility',{})
         assert not teacher.training and all(not p.requires_grad for p in teacher.parameters())
         teacher_buffers={name:value.cpu().clone() for name,value in teacher.named_buffers()}
