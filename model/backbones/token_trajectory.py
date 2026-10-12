@@ -88,6 +88,9 @@ class DeepTextC0Controller(nn.Module):
         self.o = nn.Linear(width, embed_dim, bias=False)
         nn.init.zeros_(self.o.weight)
         self.last_stats = []
+        # Pure observations, enabled only on E3's existing logging steps.
+        self.r2_collect_stats = False
+        self.r2_last_stats = []
 
     def key_values(self):
         # Once per image batch, attached to autograd during training.
@@ -108,4 +111,12 @@ class DeepTextC0Controller(nn.Module):
                     ratio = result.float().norm() / correction.float().norm().clamp_min(1e-12)
                     self.last_stats.append(torch.stack([multiplier.mean(), multiplier.std(),
                                                         multiplier.min(), multiplier.max(), ratio]))
+            if self.r2_collect_stats:
+                with torch.no_grad():
+                    actual_change = (result.float() - correction.float()).norm()
+                    denominator = correction.float().norm() + 1e-12
+                    self.r2_last_stats.append(torch.stack([
+                        multiplier.mean(), multiplier.std(), multiplier.min(), multiplier.max(),
+                        -(attention * attention.clamp_min(1e-30).log()).sum(-1).mean(),
+                        multiplier.var(dim=0, unbiased=False).mean(), actual_change / denominator]))
             return result

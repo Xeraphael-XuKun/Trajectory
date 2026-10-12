@@ -609,3 +609,10 @@ _C.TEST.METRIC = 'sysu'
 # ---------------------------------------------------------------------------- #
 # Path to checkpoint and saved log of trained model
 _C.OUTPUT_DIR = ""
+
+# Stage-two E3 is opt-in; original M2-3 artifact version remains unchanged.
+_C.R2 = CN()
+_C.R2.ENABLED = False
+_C.R2.EXPERIMENT = ''
+_C.R2.CONTROLLER_WEIGHT_DECAY = 0.0
+_C.R2.PARENT_CODE_COMMIT = ''

@@ -117,6 +117,10 @@ class build_transformer(nn.Module):
         m2 = cfg.M2
         self.m2_deep_text = bool(m2.ENABLED and m2.VARIANT == 'deep_text_c0_control')
         self.m2_deploy = bool(m2.DEPLOY_ONLY)
+        self.r2_signature = None
+        if cfg.R2.ENABLED:
+            from utils.r2_experiment import r2_signature
+            self.r2_signature = r2_signature(cfg)
         if m2.ENABLED and not self.m2_deep_text:
             raise ValueError('this worktree implements M2.VARIANT=deep_text_c0_control')
         if self.m2_deep_text:
@@ -317,6 +321,8 @@ class build_transformer(nn.Module):
                                         'signature': bank['signature'], 'teacher': bank['metadata'],
                                         'prompt_sha256': file_hash(m2.TEXT_BANK),
                                         'prompt_updates': bank['updates'], 'config': cfg.dump()}
+            if self.r2_signature is not None and not self.m2_deploy:
+                self.m2_metadata['r2'] = self.r2_signature
             self.base.clip_proj.requires_grad_(False)
             print('M2-3 enabled: one shared context bank; deployment-only={}'.format(self.m2_deploy))
 
@@ -648,6 +654,8 @@ class build_transformer(nn.Module):
         control_keys = {key for key in own if 'deep_c0_controller' in key}
         incoming_control = {key for key in normalized_keys if 'deep_c0_controller' in key}
         if control_keys or incoming_control:
+            if metadata.get('r2') != self.r2_signature:
+                raise ValueError('R2 deployment experiment/parent/weight decay differs')
             if metadata.get('variant') != 'deep_text_c0_control':
                 raise ValueError('M2-3 checkpoint requires a complete method manifest')
             controller = self.base.deep_c0_controller

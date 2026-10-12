@@ -493,6 +493,10 @@ def do_train(cfg,
     group_size = cfg.DATALOADER.NUM_INSTANCE
 
     m3_active = model_meta.m2_deep_text
+    r2_enabled = bool(cfg.R2.ENABLED)
+    if r2_enabled:
+        from utils.r2_experiment import startup_manifest, gradient_snapshot, total_gradient_norm, parameter_snapshot, write_json
+        startup_manifest(cfg, model_meta, optimizer, logger)
     m3_iterations = m3_updates = m3_amp_skips = 0
     start_epoch = 1
     if m3_active and cfg.M2.DEPLOY_ONLY:
@@ -501,6 +505,8 @@ def do_train(cfg,
         from utils.m3_checkpoint import restore_training
         start_epoch, m3_iterations, m3_updates, m3_amp_skips = restore_training(
             cfg.M2.RESUME, model_meta, optimizer, scheduler, scaler)
+    r2_elapsed = model_meta.m2_metadata.get('r2_stage_seconds', 0.) if r2_enabled else 0.
+    r2_wall_start = time.time() if r2_enabled else None
     for epoch in range(start_epoch, epochs + 1):
         start_time = time.time()
         loss_meter.reset()
@@ -545,6 +551,12 @@ def do_train(cfg,
             num_modalities = len(imgs)
             target_rep = target.repeat(num_modalities)
 
+            if r2_enabled:
+                r2_log_step = (n_iter + 1) % log_period == 0
+                r2_controller = model_meta.base.deep_c0_controller
+                r2_controller.r2_collect_stats = r2_log_step
+                if r2_log_step:
+                    r2_controller.r2_last_stats = []
             with amp.autocast(enabled=True):
                 out = model(imgs, target, camids)
                 aux = out[3] if len(out) > 3 else None
@@ -665,7 +677,12 @@ def do_train(cfg,
                 scaler.scale(total_loss).backward()
                 display_loss = total_loss.detach()
             scaler.unscale_(optimizer)
+            if r2_enabled and r2_log_step:
+                r2_grad_before = gradient_snapshot(model_meta)
             grad_norm_before_clip = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if r2_enabled and r2_log_step:
+                r2_grad_after = gradient_snapshot(model_meta)
+                r2_global_after = total_gradient_norm(model_meta)
             log_m3_gradients = m3_active and n_iter % max(1, len(train_loader) // 10) == 0
             if log_m3_gradients:
                 controller = model_meta.base.deep_c0_controller
@@ -689,6 +706,24 @@ def do_train(cfg,
                         'iterations=%s optimizer_updates=%s AMP_skips=%s',
                         stats, drift, grad, grad_norm_before_clip.item(), scaler.get_scale() < scale_before,
                         scale_before, scaler.get_scale(), m3_iterations, m3_updates, m3_amp_skips)
+
+            if r2_enabled and r2_log_step:
+                import json, math
+                norm_before = grad_norm_before_clip.item()
+                coefficient = torch.clamp(1. / (grad_norm_before_clip + 1e-6), max=1.).item()
+                record = dict(epoch=epoch, iteration=n_iter+1,
+                    iterations=m3_iterations, updates=m3_updates, AMP_skips=m3_amp_skips,
+                    layer_fields=['mean','std','min','max','attention_entropy','input_var','rel_change'],
+                    layers=torch.stack(r2_controller.r2_last_stats).cpu().tolist(),
+                    gradient_position='unscaled task gradients, before/after original clip; excludes optimizer L2',
+                    gradients_before=r2_grad_before, gradients_after=r2_grad_after,
+                    global_norm_before=norm_before if math.isfinite(norm_before) else None,
+                    global_norm_after=r2_global_after if math.isfinite(r2_global_after) else None,
+                    global_gradient_finite=math.isfinite(norm_before),
+                    clip_coefficient=coefficient if math.isfinite(coefficient) else None,
+                    CE=il.detach().item(), Triplet=tl.detach().item(),
+                    text_identity=deep_stats['loss_it'].item(), anchor=deep_stats['loss_anchor'].item())
+                logger.info('R2 NoWD %s', json.dumps(record, sort_keys=True))
 
             if use_aux_modules:
                 with torch.no_grad():
@@ -881,6 +916,16 @@ def do_train(cfg,
         if m3_active:
             logger.info('M2-3 cumulative iterations=%s optimizer_updates=%s AMP_skips=%s',
                         m3_iterations, m3_updates, m3_amp_skips)
+        if r2_enabled:
+            import json
+            r2_controller.r2_collect_stats = False
+            logger.info('R2 NoWD epoch_parameters %s', json.dumps(dict(epoch=epoch,
+                parameters=parameter_snapshot(model_meta)), sort_keys=True))
+            model_meta.m2_metadata['r2_stage_seconds'] = r2_elapsed + time.time() - r2_wall_start
+            write_json(os.path.join(cfg.OUTPUT_DIR, 'r2_training_budget.json'),
+                dict(epoch=epoch,iterations=m3_iterations,updates=m3_updates,AMP_skips=m3_amp_skips,
+                     stage_seconds=model_meta.m2_metadata['r2_stage_seconds'],
+                     new_prompt_updates=0,conditional_teacher='not_applicable',planned_epochs=60))
         if epoch % checkpoint_period == 0 and m3_active:
             from utils.m3_checkpoint import save_training
             save_training(cfg.OUTPUT_DIR, cfg.MODEL.NAME, epoch, model_meta,

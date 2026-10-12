@@ -25,9 +25,13 @@ def save_training(output, name, epoch, model, optimizer, scheduler, scaler,
     torch.save({'state_dict': visual, 'metadata': meta},
                os.path.join(output, '{}_{}_student.pth'.format(name, epoch)))
 
-def restore_training(path, model, optimizer, scheduler, scaler):
+def restore_training(path, model, optimizer, scheduler, scaler, allow_preflight=False):
     obj = torch.load(path, map_location='cpu', weights_only=False)
     meta = obj['metadata']
+    if meta.get('r2_preflight_only') and not allow_preflight:
+        raise ValueError('R2 preflight checkpoint cannot resume formal training')
+    if meta.get('r2') != model.m2_metadata.get('r2'):
+        raise ValueError('R2 resume experiment/parent/weight decay differs; old M3 cannot resume E3')
     for key in ('variant', 'implementation', 'rho', 'control_width', 'context_length',
                 'acceleration_mix', 'signature', 'prompt_sha256', 'prompt_updates'):
         if meta[key] != model.m2_metadata[key]:
@@ -38,6 +42,8 @@ def restore_training(path, model, optimizer, scheduler, scaler):
     for config in (old, new):
         config.OUTPUT_DIR = ''
         config.M2.RESUME = ''
+        if 'R2' in config and not config.R2.ENABLED:
+            del config['R2']
     if old != new:
         raise ValueError('M2-3 resume training settings differ')
     model.load_state_dict(obj['state_dict'], strict=True)
@@ -48,4 +54,7 @@ def restore_training(path, model, optimizer, scheduler, scaler):
     torch.cuda.set_rng_state_all(obj['rng']['cuda'])
     np.random.set_state(obj['rng']['numpy'])
     random.setstate(obj['rng']['python'])
+    for key in ('r2_initial_state_sha256', 'r2_stage_seconds'):
+        if key in meta:
+            model.m2_metadata[key] = meta[key]
     return meta['epoch'] + 1, meta['actual_iterations'], meta['optimizer_updates'], meta['amp_skips']

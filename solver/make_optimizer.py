@@ -23,6 +23,13 @@ def make_optimizer(cfg, model, center_criterion):
         print('MOD_DELTA_ONLY: frozen {:,} params, trainable {:,} (mod_delta only)'
               .format(frozen, kept))
 
+    r2_enabled = bool(cfg.R2.ENABLED)
+    controller_ids = set()
+    if r2_enabled:
+        from utils.r2_experiment import r2_signature, controller_parameters
+        r2_signature(cfg)
+        controller_ids = {id(p) for p in controller_parameters(model).values()}
+        parent_groups = []
     params = []
     for key, value in model.named_parameters():
         if not value.requires_grad:
@@ -86,6 +93,13 @@ def make_optimizer(cfg, model, center_criterion):
             # BASE_LR * BIAS_LR_FACTOR * CHART_LR_MULT.
             lr = lr * cfg.SOLVER.CHART_LR_MULT
 
+        if r2_enabled:
+            parent_groups.append(dict(index=len(params), parameters=[key], numel=value.numel(),
+                                      peak_lr=lr, weight_decay=weight_decay))
+            # Override only the five verified parameter objects, after all
+            # original LR/bias rules; retain original group order and Adam.
+            if id(value) in controller_ids:
+                weight_decay = cfg.R2.CONTROLLER_WEIGHT_DECAY
         params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
 
     if cfg.SOLVER.OPTIMIZER_NAME == 'SGD':
@@ -96,4 +110,6 @@ def make_optimizer(cfg, model, center_criterion):
         optimizer = getattr(torch.optim, cfg.SOLVER.OPTIMIZER_NAME)(params)
     optimizer_center = torch.optim.SGD(center_criterion.parameters(), lr=cfg.SOLVER.CENTER_LR)
 
+    if r2_enabled:
+        optimizer.r2_parent_groups = parent_groups
     return optimizer, optimizer_center
