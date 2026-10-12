@@ -11,9 +11,13 @@ from tools.iclr_exp.audit import build_panel, run_audit, isolated_eval
 VERSION = 'iclr-i1-tgva-ref-v1'
 ROOT = Path(__file__).resolve().parents[2]
 NEUTRAL_VERSION = 'iclr-i2-m5-neutral-v1'
+PAIRED_VERSION = 'iclr-i3-m5-paired-v1'
 
 
 def make_run(c, *args):
+    if c.ICLR_EXP.VARIANT == 'm5_paired':
+        from tools.iclr_exp.paired_runtime import I3Run
+        return I3Run(c, *args)
     if c.ICLR_EXP.VARIANT == 'm5_neutral':
         from tools.iclr_exp.neutral_runtime import I2Run
         return I2Run(c, *args)

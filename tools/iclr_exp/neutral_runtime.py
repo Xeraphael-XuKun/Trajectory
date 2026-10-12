@@ -13,6 +13,9 @@ from model.m2_teacher import normalized_clip_logits
 
 
 class I2Run(I1Run):
+    implementation = NEUTRAL_VERSION
+    variant = 'm5_neutral'
+    target_version = 'ellT+(.5-view)*shift; tau0=.07; Td=2; lambda=.5'
     loss_weight = .5
     resume_keys = ('implementation','variant','original_clip_sha256','student','resources','neutral_stats_sha256','target_version')
 
@@ -26,16 +29,16 @@ class I2Run(I1Run):
         self.teacher,self.text,source,meta=load_resources(c,device)
         self.shift,self.stats=load_shift(c,source,meta,device)
         if not torch.equal(self.teacher.base.clip_proj,model.base.clip_proj):
-            raise ValueError('I2 student P0 differs from original frozen teacher P0')
+            raise ValueError('student P0 differs from original frozen teacher P0')
         self.paired=paired_mask(self.stats,device)
-        self.manifest=dict(implementation=NEUTRAL_VERSION,variant='m5_neutral',
+        self.manifest=dict(implementation=self.implementation,variant=self.variant,
             source_base_commit='db8a5c65ba0b7b5f0c62d00d2adb2f5e3bfe1177',
             infrastructure_commit='b0bcad8631d6cc0853809a4db319f34421331ee4',
             code_commit=git(['rev-parse','HEAD']).strip(),dirty_diff=git(['diff','HEAD']),
             untracked_sources=git(['ls-files','--others','--exclude-standard']).splitlines(),
             config=c.dump(),original_clip_sha256=source['clip_sha256'],
             resources=fingerprint(c,meta,source),neutral_stats_sha256=file_digest(c.ICLR_EXP.ASSETS.NEUTRAL_STATS),
-            target_version='ellT+(.5-view)*shift; tau0=.07; Td=2; lambda=.5',
+            target_version=self.target_version,pair_rng=c.ICLR_EXP.PAIR_RNG,
             teacher_used=True,prompt_stage_used=False,projection_trainable=False,
             student=dict(trajectory_variant='dense',acceleration_mix=0.,gain_shape=[11,1,129,768]),
             nominal_loader_batches=len(train_loader),logical_images_per_batch=192,

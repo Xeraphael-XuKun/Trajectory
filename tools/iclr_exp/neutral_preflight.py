@@ -38,7 +38,8 @@ def local_position_diagnostic_loader(c,classes,device):
 
 
 def main():
-    p=argparse.ArgumentParser(description='I2 必要检查；本地可用明确标记的部分统计，服务器要求正式共享缓存')
+    p=argparse.ArgumentParser(description='I2/I3 必要检查；本地可用明确标记的部分统计，服务器要求正式共享缓存')
+    p.add_argument('--config',default=str(ROOT/'configs/iclr_exp/m5_neutral.yml'))
     p.add_argument('--resources',required=True);p.add_argument('--output',required=True)
     p.add_argument('--device',default='cuda');p.add_argument('--threads',type=int,default=4)
     p.add_argument('--batch-per-modality',type=int,default=2,choices=[2,64])
@@ -61,7 +62,15 @@ def main():
     from solver import make_optimizer
     from solver.scheduler_factory import create_scheduler
     from train import set_seed
-    c=load_config(variant=ROOT/'configs/iclr_exp/m5_neutral.yml',resources=a.resources)
+    c=load_config(variant=a.config,resources=a.resources)
+    paired=c.ICLR_EXP.VARIANT=='m5_paired'
+    if paired:
+        from tools.iclr_exp.paired_runtime import I3Run
+        from tools.iclr_exp.runtime import PAIRED_VERSION
+        from model.iclr_exp.paired_forward import paired_visual_forward
+        from loss.iclr_paired import paired_terms,branch_quality
+        RunClass=I3Run;method_version=PAIRED_VERSION
+    else:RunClass=I2Run;method_version=NEUTRAL_VERSION
     output=Path(a.output);output.mkdir(parents=True,exist_ok=True);checks={}
     def check(name,ok,evidence=True):
         if not ok:raise AssertionError(name+': '+str(evidence))
@@ -95,16 +104,47 @@ def main():
     # The above seven images have uneven view counts: no platform-balanced reducer.
     rows=(zero.exp()*(zero-normalized_clip_logits(g.detach(),proj,text).div(2).log_softmax(-1))).sum(-1)
     check('KL_identity_sum_image_mean_Td_squared_once',torch.equal(new.detach(),4*rows.mean()))
+    if paired:
+        gon=g.detach().clone().requires_grad_();goff=g.detach().clone().requires_grad_()
+        pair_loss,off_loss,on_loss=paired_terms(gon,goff,proj,text,raw,zero)
+        check('I3_zero_shift_equal_branches_loss_matches_old_M5',torch.equal(pair_loss,old))
+        grads=torch.autograd.grad(pair_loss,[gon,goff])
+        check('I3_each_branch_half_old_gradient',torch.equal(grads[0],.5*do) and torch.equal(grads[1],.5*do))
+        changed=fixed_teacher_targets(logits,mods,views,delta)[1]
+        pair_loss,off_loss,on_loss=paired_terms(gon,goff,proj,text,raw,changed)
+        check('I3_nonzero_shift_two_target_mean',torch.equal(pair_loss,2*(off_loss+on_loss)))
+        quality=branch_quality(raw,raw,raw,zero,mods,views,torch.zeros_like(delta))
+        check('zero_direction_cosine_NA',all(x is None for x in quality['per_image']['direction_cosine']))
+
     base=c.clone();base.defrost();base.ICLR_EXP.ENABLED=False;base.freeze()
     set_seed(1234,c.SOLVER.CUDNN_BENCHMARK);reference=make_model(base,500,7,2)
     reference_state=reference.state_dict();before_rng=torch.get_rng_state().clone()
     set_seed(1234,c.SOLVER.CUDNN_BENCHMARK);model=make_model(c,500,7,2)
     check('ICLR_disabled_original_student_state',set(reference_state)==set(model.state_dict()) and all(torch.equal(v,model.state_dict()[k]) for k,v in reference_state.items()))
-    check('I2_init_preserves_CPU_RNG',torch.equal(before_rng,torch.get_rng_state()))
+    check('student_init_preserves_CPU_RNG',torch.equal(before_rng,torch.get_rng_state()))
     check('no_TGVA_prompt_or_teacher_module',not hasattr(model,'iclr_tgva') and model.prompts is None and not any('teacher' in n for n,_ in model.named_modules()))
     check('frozen_original_P0',not model.base.clip_proj.requires_grad)
     check('zero_dense_C0',tuple(model.base.token_trajectory.gain.shape)==(11,1,129,768) and not torch.count_nonzero(model.base.token_trajectory.gain))
     del reference,reference_state;gc.collect()
+    if paired:
+        model.to(a.device).train()
+        x=torch.randn(2,3,256,128,device=a.device)
+        # CPU/CUDA states after the pair equal after a single ON pass.
+        saved=rng_state()
+        with torch.no_grad():single=model.base(x)
+        after=rng_state();restore_rng(saved)
+        with torch.no_grad():on,off=paired_visual_forward(model.base,x)
+        check('zero_gain_train_matched_DropPath_exact',torch.equal(on,off) and torch.equal(on,single))
+        check('pair_external_CPU_CUDA_RNG_equals_single_ON',torch.equal(after['torch'],torch.get_rng_state()) and all(torch.equal(u,v) for u,v in zip(after['cuda'],torch.cuda.get_rng_state_all())))
+        with torch.no_grad():model.base.token_trajectory.gain.fill_(.02)
+        with isolated_eval(model),torch.no_grad():
+            on,off=paired_visual_forward(model.base,x)
+            check('nonzero_gain_changes_ON',not torch.equal(on,off))
+            model.base.token_trajectory.gain.zero_()
+            original=model.base(x)
+            check('OFF_disables_all_11_injections',torch.equal(off,original))
+        del x,on,off,single,original;gc.collect();torch.cuda.empty_cache()
+
     production_strict=True;strict_error=None
     with ExitStack() as stack:
         try:teacher,text,source,teacher_meta=load_resources(c,a.device)
@@ -167,20 +207,31 @@ def main():
             optimizer.zero_grad();bn_before=model.bottleneck.num_batches_tracked.clone();student_calls=[]
             h=model.base.register_forward_hook(lambda *_:student_calls.append(1))
             with torch.cuda.amp.autocast(enabled=device.type=='cuda'):
+                # I3 teacher first, original visual AMP, exact same image rows.
+                images=torch.cat(inputs);mods=torch.arange(3,device=device).repeat_interleave(len(inputs[0]))
+                views=((torch.cat(cams)==5)|(torch.cat(cams)==6)).long()
+                with torch.no_grad():
+                    gt=teacher.forward_pre_bn(images,mods,views)
+                    lp,lq=fixed_teacher_targets(normalized_clip_logits(gt,teacher.base.clip_proj,text),mods,views,shift)
                 out=model(inputs,camids=cams);aux=out[3]
                 identity,ce,tri=loss_fn(out[0],out[1],target_rep)
-                with torch.no_grad():
-                    gt=teacher.forward_pre_bn(aux['images'],aux['mods'],aux['views'])
-                    lp,lq=fixed_teacher_targets(normalized_clip_logits(gt,teacher.base.clip_proj,text),aux['mods'],aux['views'],shift)
-                kd=neutral_kd(out[1],model.base.clip_proj,text,lq);total=identity+.5*kd
+                aux.update(log_p=lp,log_q=lq)
+                if paired:kd,raw_off,raw_on=paired_terms(out[1],aux['g_off'],model.base.clip_proj,text,lp,lq)
+                else:kd=neutral_kd(out[1],model.base.clip_proj,text,lq)
+                total=identity+.5*kd
             h.remove()
-            check('one_student_visual_forward',len(student_calls)==1)
+            check('student_visual_forward_count',len(student_calls)==(2 if paired else 1),len(student_calls))
             check('BN_once',int(model.bottleneck.num_batches_tracked-bn_before)==1)
             check('online_same_augmented_tensor',torch.equal(aux['images'],torch.cat(inputs)))
             check('semantic_FP32',lp.dtype==lq.dtype==kd.dtype==torch.float32)
             if attempt==0:
                 head_grads=torch.autograd.grad(kd,[model.bottleneck.weight,model.classifier.weight],retain_graph=True,allow_unused=True)
                 check('KD_bypasses_BN_classifier',all(x is None for x in head_grads))
+                if paired:
+                    check('I3_exact_branch_mean_weight',torch.equal(.5*kd,raw_off+raw_on))
+                    off_grads=torch.autograd.grad(raw_off,[model.base.blocks[11].attn.qkv.weight,model.base.token_trajectory.gain],retain_graph=True,allow_unused=True)
+                    check('OFF_live_backbone_gradient',off_grads[0] is not None and off_grads[0].double().norm()>0)
+                    check('OFF_gain_zero',off_grads[1] is None or not torch.count_nonzero(off_grads[1]))
                 gain_grad=torch.autograd.grad(kd,model.base.token_trajectory.gain,retain_graph=True)[0]
                 check('KD_gain_gradient_nonzero',gain_grad.double().norm()>0)
             scaler.scale(total).backward();scaler.unscale_(optimizer)
@@ -202,19 +253,29 @@ def main():
             def __len__(self):return 1
         with tempfile.TemporaryDirectory(prefix='resume_',dir=output) as directory:
             rc=c.clone();rc.defrost();rc.ICLR_EXP.AUDIT.ENABLED=False;rc.OUTPUT_DIR=directory;rc.freeze()
-            run=I2Run(rc,model,SmallLoader(),optimizer,scheduler,scaler)
+            run=RunClass(rc,model,SmallLoader(),optimizer,scheduler,scaler)
             run.manifest['preflight_only']=True
+            if paired:
+                calls=[];handle=teacher.base.register_forward_hook(lambda *_:calls.append(1))
+                with torch.cuda.amp.autocast(enabled=device.type=='cuda'):
+                    ready=run.prepare(inputs,cams)
+                    check('runtime_one_online_teacher_pass',len(calls)==1)
+                    check('runtime_teacher_target_matches_preflight',torch.allclose(ready['log_p'],lp,atol=1e-6) and torch.allclose(ready['log_q'],lq,atol=1e-6))
+                    check('runtime_paired_loss_matches',torch.equal(run.loss(aux),kd))
+                handle.remove()
+
             aux['targets']=target_rep
             before_bn={k:v.clone() for k,v in model.bottleneck.state_dict().items()};saved_rng=rng_state()
             run.gradient_probe(1,0,identity,aux,loss_fn)
             check('fixed_probe_BN_RNG_unchanged',all(torch.equal(v,model.bottleneck.state_dict()[k]) for k,v in before_bn.items()) and torch.equal(saved_rng['torch'],torch.get_rng_state()) and all(torch.equal(u,v) for u,v in zip(saved_rng['cuda'],torch.cuda.get_rng_state_all())))
+            if paired:run.last_terms=dict(raw_off=float(raw_off.detach()),raw_on=float(raw_on.detach()))
             run.batches=skips;run.skips=skips;run.step(1,49,before,norm,ce,tri,kd,total.detach(),out[0],target_rep)
             run.save(1,0.,skips+1)
             obj=torch.load(Path(directory)/'resume_latest.pth',map_location='cpu',weights_only=False)
             check('full_checkpoint_has_no_teacher_or_text',not any(k.startswith(('teacher.','text.','iclr_tgva.')) for k in obj['state_dict']))
             del obj;gc.collect()
             resume=rc.clone();resume.defrost();resume.ICLR_EXP.RESUME=str(Path(directory)/'resume_latest.pth');resume.freeze()
-            restored=I2Run(resume,model,SmallLoader(),optimizer,scheduler,scaler)
+            restored=RunClass(resume,model,SmallLoader(),optimizer,scheduler,scaler)
             check('production_resume_counters_and_fixed_probe',restored.start_epoch==2 and restored.batches==skips+1 and restored.updates==1 and restored.skips==skips and torch.equal(restored.probe_batch['images'],run.probe_batch['images']))
             # Real panel, eval OFF only for diagnostics; does not enter train graph.
             from datasets.whu_mars import WHU_MARS
@@ -228,14 +289,14 @@ def main():
             reference=make_model(base,500,7,2);reference.load_state_dict(deploy,strict=True);reference.to(device).eval()
             with torch.no_grad():actual=reference(inputs[0],mode=1).cpu()
             check('deployment_strict_reload_features_exact',torch.equal(expected,actual),float((expected-actual).abs().max()))
-            torch.save(dict(state_dict=deploy,metadata=dict(implementation=NEUTRAL_VERSION,variant='m5_neutral',epoch=0,
+            torch.save(dict(state_dict=deploy,metadata=dict(implementation=method_version,variant=c.ICLR_EXP.VARIANT,epoch=0,
                 original_clip_sha256=file_digest(c.MODEL.PRETRAIN_PATH),student=dict(trajectory_variant='dense',acceleration_mix=0.,gain_shape=[11,1,129,768]))),output/'preflight_student.pth')
-        report=dict(status='passed',production_strict_teacher=production_strict,strict_teacher_error=strict_error,
+        report=dict(status='passed',variant=c.ICLR_EXP.VARIANT,production_strict_teacher=production_strict,strict_teacher_error=strict_error,
             formal_statistics_checked=a.require_stats,torch_version=torch.__version__,device=a.device,
             images_per_batch=3*a.batch_per_modality,initial_amp_skips=skips,scaler_scale=scaler.get_scale(),
             scope='method checks + real old teacher/text + small actual train-image backward/reload; not formal training',checks=checks)
         (output/'preflight.json').write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
-        print('I2_PREFLIGHT_OK',output/'preflight.json',flush=True)
+        print(('I3_PREFLIGHT_OK' if paired else 'I2_PREFLIGHT_OK'),output/'preflight.json',flush=True)
 
 
 if __name__=='__main__':main()

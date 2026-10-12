@@ -1,0 +1,16 @@
+MODEL:
+  PRETRAIN_PATH: 'E:/CFAN/weights/ViT-B-16.pt'
+DATASETS:
+  ROOT_DIR: 'E:/CFAN/datasets'
+DATALOADER:
+  NUM_WORKERS: 0
+ICLR_EXP:
+  ASSETS:
+    ORIGINAL_CLIP: 'E:/CFAN/weights/ViT-B-16.pt'
+    TEACHER_CKPT: 'C:/Users/skrXukun/.codex/worktrees/m2-e/logs/teacher/conditional_teacher_epoch60.pth'
+    TEXT_BANK: 'C:/Users/skrXukun/.codex/worktrees/m2-e/artifacts/shared_id_text_bank.pt'
+    PROMPT_CKPT: 'C:/Users/skrXukun/.codex/worktrees/m2-e/artifacts/shared_id_prompts_final.pt'
+    NEUTRAL_STATS: 'C:/Users/skrXukun/.codex/worktrees/iclr-i2-neutral/Trajectory/work/neutral_view_shift.pt'
+  AUDIT:
+    BATCH_SIZE: 2
+OUTPUT_DIR: 'C:/Users/skrXukun/.codex/worktrees/iclr-i3-paired/Trajectory/work/local_i3'

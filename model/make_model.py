@@ -465,7 +465,11 @@ class build_transformer(nn.Module):
                 rng_cpu_before = torch.random.get_rng_state()
                 rng_cuda_before = (torch.cuda.get_rng_state(x.device)
                                    if x.is_cuda else None)
-            global_feat = self.base(x, modal_label=modal, vpr_gate=vpr_gate)
+            if self.iclr_enabled and self.iclr_variant == 'm5_paired':
+                from model.iclr_exp.paired_forward import paired_visual_forward
+                global_feat, paired_off = paired_visual_forward(self.base, x)
+            else:
+                global_feat = self.base(x, modal_label=modal, vpr_gate=vpr_gate)
             if replay_aux:
                 rng_cpu_after = torch.random.get_rng_state()
                 rng_cuda_after = (torch.cuda.get_rng_state(x.device)
@@ -475,12 +479,14 @@ class build_transformer(nn.Module):
             if self.iclr_enabled:
                 if camids is None or len(imgs) != 3:
                     raise ValueError('ICLR experiments require three modality-major image/camera batches')
-                if self.iclr_variant == 'm5_neutral':
+                if self.iclr_variant in ('m5_neutral', 'm5_paired'):
                     mods = torch.arange(3, device=x.device).repeat_interleave(per_modality)
                     cams = torch.cat(camids).to(x.device)
-                    return cls_score, global_feat, feat, dict(kind='iclr_neutral',
+                    aux = dict(kind='iclr_paired' if self.iclr_variant == 'm5_paired' else 'iclr_neutral',
                         g_on=global_feat, images=x, mods=mods,
                         views=((cams == 5) | (cams == 6)).long(), projection=self.base.clip_proj)
+                    if self.iclr_variant == 'm5_paired': aux['g_off'] = paired_off
+                    return cls_score, global_feat, feat, aux
                 # Full OFF pass, live backbone gradients, independent DropPath.
                 g_off = self.base(x, trajectory_gate=x.new_zeros(x.shape[0]))
                 mods = torch.arange(3, device=x.device).repeat_interleave(per_modality)

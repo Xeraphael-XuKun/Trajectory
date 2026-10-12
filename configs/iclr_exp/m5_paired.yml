@@ -1,0 +1,14 @@
+# 开启/关闭两条完整学生视觉图；匹配 DropPath；仅开启分支走身份路径。
+ICLR_EXP:
+  VARIANT: 'm5_paired'
+  PAIR_RNG: 'replay'
+  PROJECTION_TRAINABLE: false
+  KD:
+    BASE_TEMPERATURE: 0.07
+    DISTILL_TEMPERATURE: 2.0
+    WEIGHT: 0.5
+  NEUTRAL:
+    COEFFICIENT: 1.0
+    CROSSFIT_FOLDS: 5
+    CROSSFIT_SEED: 20261012
+OUTPUT_DIR: './logs/iclr_inspired/I3_M5_Paired_seed1234'

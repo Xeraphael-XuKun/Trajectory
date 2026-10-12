@@ -60,6 +60,11 @@ def run_audit(run,epoch):
         joint_on_off_cosine=F.cosine_similarity(F.normalize(on@projection,dim=-1),F.normalize(off@projection,dim=-1)).tolist(),
         projection_relative_drift=float((projection-run.initial_projection).norm()/run.initial_projection.norm()),
         gain=dict(rms=gain.square().mean(-1).sqrt().tolist(),maxabs=gain.abs().amax(-1).tolist()),correction_ratios={})
+    if run.c.ICLR_EXP.VARIANT == 'm5_paired':
+        from loss.iclr_paired import branch_quality
+        log_off=normalized_clip_logits(off,projection,run.text.cpu()).div(2).log_softmax(-1)
+        output['off_target_quality']=target_quality(logp,logq,targets,mods,views,run.paired.cpu()[targets,mods],log_off)
+        output['paired_branches']=branch_quality(logs,log_off,logp,logq,mods,views,run.shift.cpu())
     for layer,values in rho_all.items():
         values=torch.cat(values);entries=[]
         for m in range(3):

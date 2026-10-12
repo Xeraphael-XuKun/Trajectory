@@ -538,6 +538,8 @@ def do_train(cfg,
             target_rep = target.repeat(num_modalities)
 
             with amp.autocast(enabled=True):
+                paired_targets = (iclr_run.prepare(imgs, camids)
+                                  if iclr_run is not None and cfg.ICLR_EXP.VARIANT == 'm5_paired' else None)
                 out = model(imgs, target, camids)
                 aux = out[3] if len(out) > 3 else None
                 cls_score, global_feat, feat = out[0], out[1], out[2]
@@ -552,6 +554,7 @@ def do_train(cfg,
                 if iclr_run is not None:
                     iclr_identity = loss
                     aux["targets"] = target_rep
+                    if paired_targets is not None: aux.update(paired_targets)
                     iclr_raw = iclr_run.loss(aux, target_rep)
                     loss = loss + iclr_run.loss_weight * iclr_raw
                 if m2_enabled:

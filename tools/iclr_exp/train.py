@@ -9,10 +9,10 @@ sys.path.insert(0, str(ROOT))
 
 
 def parser():
-    p = argparse.ArgumentParser(description='ICLR-inspired student; this branch defaults to I2 M5-Neutral')
+    p = argparse.ArgumentParser(description='ICLR-inspired student; this branch defaults to I3 M5-Paired')
     p.add_argument('--base-config')
     p.add_argument('--common-config')
-    p.add_argument('--config', default=str(ROOT/'configs/iclr_exp/m5_neutral.yml'))
+    p.add_argument('--config', default=str(ROOT/'configs/iclr_exp/m5_paired.yml'))
     p.add_argument('--resources')
     p.add_argument('--resume', default='')
     p.add_argument('opts', nargs=argparse.REMAINDER)
@@ -27,7 +27,7 @@ def main():
         opts += ['ICLR_EXP.RESUME', args.resume]
     c = load_config(args.base_config, args.common_config, args.config, args.resources, opts)
     if not c.ICLR_EXP.RESUME and (Path(c.OUTPUT_DIR)/'resume_latest.pth').exists():
-        raise ValueError('output already has an I1 checkpoint; use --resume or a new output directory')
+        raise ValueError('output already has an ICLR checkpoint; use --resume or a new output directory')
     from train import setup_cuda_visible_devices, set_seed
     setup_cuda_visible_devices(c)
     set_seed(c.SOLVER.SEED, c.SOLVER.CUDNN_BENCHMARK)
@@ -45,7 +45,7 @@ def main():
     loaders = make_dataloader(c)
     train_loader, _, val_loaders, queries, classes, cameras, views = loaders
     if classes != 500:
-        raise ValueError('I1 requires WHU-MARS-1000 with 500 training identities')
+        raise ValueError('ICLR requires WHU-MARS-1000 with 500 training identities')
     model = make_model(c, classes, cameras, views)
     loss_fn, center = make_loss(c, classes)
     optimizer, opt_center = make_optimizer(c, model, center)

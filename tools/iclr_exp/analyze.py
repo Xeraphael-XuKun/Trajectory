@@ -57,6 +57,7 @@ def compare(new_dir, old_dir, label, output, filename='per_query_post.jsonl'):
             correct_to_wrong=sum(r['R1_old']==1 and r['R1_new']==0 for r in rows),
             remain_correct=sum(r['R1_old']==1 and r['R1_new']==1 for r in rows),
             remain_wrong=sum(r['R1_old']==0 and r['R1_new']==0 for r in rows),
+            AP_delta_mean=float(delta.mean()) if len(delta) else None,
             AP_delta_quantiles=np.quantile(delta,[0,.1,.5,.9,1]).tolist() if len(delta) else None,
             first_positive_rank_transitions=transitions)
     result=dict(ALL=summarize(pairs),query_conditions_full_gallery={})
@@ -71,17 +72,21 @@ def compare(new_dir, old_dir, label, output, filename='per_query_post.jsonl'):
 
 
 def main():
-    p=argparse.ArgumentParser(description='生成I1结果交接文档；可选接入匹配的C0/M5特征导出')
+    p=argparse.ArgumentParser(description='生成ICLR实验结果交接文档；接入匹配的C0/M5/I2导出')
     p.add_argument('--evaluation',required=True);p.add_argument('--c0-evaluation');p.add_argument('--m5-evaluation')
-    p.add_argument('--output',required=True)
+    p.add_argument('--i2-evaluation');p.add_argument('--output',required=True)
     a=p.parse_args();source=Path(a.evaluation);output=Path(a.output);output.mkdir(parents=True,exist_ok=True)
     result=read_json(source/'results.json');run=source.parent
     manifest=read_json(run/'run_manifest.json') if (run/'run_manifest.json').exists() else None
     budget=read_json(run/'stage_budget.json') if (run/'stage_budget.json').exists() else None
     audits={path.stem:read_json(path) for path in sorted((run/'audit').glob('epoch*.json'))}
     gradients={path.stem:read_json(path) for path in sorted(run.glob('gradient_epoch*.json'))}
+    if result.get('variant')=='m5_paired' and a.i2_evaluation:
+        i2_manifest=read_json(Path(a.i2_evaluation).parent/'run_manifest.json')
+        if i2_manifest['variant']!='m5_neutral' or manifest['resources']!=i2_manifest['resources'] or manifest['neutral_stats_sha256']!=i2_manifest['neutral_stats_sha256']:
+            raise ValueError('I3/I2未使用完全相同的教师/文本/训练索引/偏移工件，不能认定共享资源匹配')
     comparisons={}
-    for label,path in (('C0',a.c0_evaluation),('M5',a.m5_evaluation)):
+    for label,path in (('C0',a.c0_evaluation),('M5',a.m5_evaluation),('I2',a.i2_evaluation)):
         comparisons[label]=compare(source,Path(path),label,output) if path else None
         if path and (source/'per_query_G_to_A_post.jsonl').exists() and (Path(path)/'per_query_G_to_A_post.jsonl').exists():
             comparisons[label+'_G_to_A']=compare(source,Path(path),label+'_G_to_A',output,'per_query_G_to_A_post.jsonl')
@@ -94,15 +99,17 @@ def main():
     payload=dict(augmented_target_audits=augmented,neutral_crossfit=stats,evaluation=result,manifest=manifest,budget=budget,audits=audits,gradient_probes=gradients,paired_comparisons=comparisons)
     (output/'handoff.json').write_text(json.dumps(payload,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
     def metric(value):return 'NA' if value is None else '%.2f'%(100*value)
-    neutral=result.get('variant')=='m5_neutral'
-    name='I2 M5-Neutral' if neutral else 'I1 C0＋TGVA-Ref'
+    paired=result.get('variant')=='m5_paired'
+    neutral=result.get('variant') in ('m5_neutral','m5_paired')
+    tag='I3' if paired else ('I2' if neutral else 'I1')
+    name={'I1':'I1 C0＋TGVA-Ref','I2':'I2 M5-Neutral','I3':'I3 M5-Paired'}[tag]
     lines=['# '+name+' 实验结果交接','',
         '本文件报告实际测量与证据；方法定义请配合实验方案阅读。',
         '','## 执行状态与证据','',
         '- 正式epoch60完整评测：'+('是' if result['formal'] else '否；这是小样本/非最终工件核验，不能作为正式成绩'),
         '- 工件epoch：'+str(result['epoch']),'- 权重：`'+result['checkpoint']+'`',
         '- 权重SHA256：`'+result['checkpoint_sha256']+'`','- 独立严格重载，FP32、SYSU同相机过滤、无rerank；pre/post读取等价检查通过。',
-        ('- I2复用冻结旧M5教师、身份文本表与固定训练集偏移；主比较对象为旧M5。' if neutral else '- I1不使用M5教师、身份文本表或中性偏移。'),
+        ('- '+tag+'复用冻结旧M5教师、身份文本表与固定训练集偏移；比较对象为旧M5'+('及I2。' if paired else '。') if neutral else '- I1不使用M5教师、身份文本表或中性偏移。'),
         '','## 主结果与完整分组','',
         '| 读出 | mAP | R1 | R5 | R10 | mINP | 有效query |','|---|---:|---:|---:|---:|---:|---:|']
     for neck in ('post','pre'):
@@ -118,11 +125,19 @@ def main():
     for title,value in (('资源与实现manifest',manifest),('运行预算',budget),('固定面板审计',audits),('固定增强面板目标',augmented),('偏移交叉拟合',stats),('分项梯度',gradients)):
         lines+=['','### '+title,'']
         lines+=['未提供，无法确认。'] if value is None or value=={} else ['```json',json.dumps(value,ensure_ascii=False,indent=2),'```']
+    if paired:
+        lines+=['','I3额外记录off→原目标/on→中性目标及两个交叉目标KL、on/off学生JS、目标JS、类别中心化输出变化方向和三项梯度。须同时排查off退化；额外分支差距不能单独当成检索收益。']
     lines+=['','## 历史文档参考与重评测差异','', '以下历史值来自第一阶段结果说明，未当成本次重评测：C0 post-BN mAP/R1=13.52/33.61；旧M5=15.01/35.30。']
     for label,path,ma,r1 in (('C0',a.c0_evaluation,13.52,33.61),('M5',a.m5_evaluation,15.01,35.30)):
         if path:
             measured=read_json(Path(path)/'results.json')['post']['ALL']
             lines.append('- '+label+' 重评测 mAP/R1='+metric(measured['mAP'])+'/'+metric(measured['R1'])+'；与文档之差(pp)=%.4f/%.4f。保留差异，不能替换成更有利的数字。'%(100*measured['mAP']-ma,100*measured['R1']-r1))
+    if paired and a.i2_evaluation:
+        i2=read_json(Path(a.i2_evaluation)/'results.json')
+        lines+=['','### 与I2相同读出的总体对比','','| 读出 | I2 mAP | I3 mAP | ΔmAP(pp) | I2 R1 | I3 R1 | ΔR1(pp) |','|---|---:|---:|---:|---:|---:|---:|']
+        for neck in ('post','pre'):
+            old,new=i2[neck]['ALL'],result[neck]['ALL']
+            lines.append('| %s | %s | %s | %.4f | %s | %s | %.4f |'%(neck,metric(old['mAP']),metric(new['mAP']),100*(new['mAP']-old['mAP']),metric(old['R1']),metric(new['R1']),100*(new['R1']-old['R1'])))
     lines+=['','## 改善与削弱的query','']
     for label,value in comparisons.items():
         lines+=['','### 对比 '+label,'']
@@ -130,8 +145,8 @@ def main():
     lines+=['','## 解释边界与待完成工作','',
         ('估计集合的平均空地logits差归零是构造恒等式，不证明身份信息保留、拟合外收益或检索改善。教师弱于旧学生，中性目标可能不可实现。需结合配对/地面-only目标诊断、Thermal和G→A逐query比较。单seed不能证明稳定性。' if neutral else '六锚点目标达标不证明身份信息保留或几何纠正。开关差距增大需排查关闭分支恶化；同模态、Thermal跨模态及G→A应结合完整分组和逐query证据判断。单seed结果不能证明训练稳定性。'),
         '本脚本不自动推断图像遮挡/背景，不自动改变权重、选择最佳epoch或启动额外训练。缺少参考工件和未执行项目如实保留。']
-    (output/(('I2' if neutral else 'I1')+'_实验结果说明.md')).write_text('\n'.join(lines)+'\n',encoding='utf-8')
-    print(output/(('I2' if neutral else 'I1')+'_实验结果说明.md'))
+    (output/(tag+'_实验结果说明.md')).write_text('\n'.join(lines)+'\n',encoding='utf-8')
+    print(output/(tag+'_实验结果说明.md'))
 
 
 if __name__=='__main__':main()

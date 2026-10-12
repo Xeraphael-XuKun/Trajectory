@@ -84,7 +84,7 @@ def all_groups(qf,gf,qindex,gindex,subtask_rows=None):
 
 def main():
     p=argparse.ArgumentParser(description='ICLR epoch60及历史C0/M5独立严格重载与完整排序导出')
-    p.add_argument('--config',default=str(ROOT/'configs/iclr_exp/m5_neutral.yml'));
+    p.add_argument('--config',default=str(ROOT/'configs/iclr_exp/m5_paired.yml'));
     p.add_argument('--reference-method',choices=['c0','m5']);p.add_argument('--reference-log'); p.add_argument('--resources',required=True); p.add_argument('--checkpoint',required=True)
     p.add_argument('--full-checkpoint'); p.add_argument('--output',required=True)
     p.add_argument('--device',default='cuda',choices=['cpu','cuda'])
@@ -102,7 +102,7 @@ def main():
     from datasets.make_dataloader import val_collate_fn
     from model import make_model
     from tools.iclr_exp.configuration import load_config
-    from tools.iclr_exp.runtime import VERSION,NEUTRAL_VERSION,git
+    from tools.iclr_exp.runtime import VERSION,NEUTRAL_VERSION,PAIRED_VERSION,git
     from tools.m2.artifacts import file_digest
     c=load_config(variant=a.config,resources=a.resources)
     obj=torch.load(a.checkpoint,map_location='cpu',weights_only=False)
@@ -113,10 +113,10 @@ def main():
         expected_version=meta['implementation']
     else:
         meta=obj['metadata']
-        expected_version = NEUTRAL_VERSION if c.ICLR_EXP.VARIANT == 'm5_neutral' else VERSION
+        expected_version = {'tgva_ref':VERSION,'m5_neutral':NEUTRAL_VERSION,'m5_paired':PAIRED_VERSION}[c.ICLR_EXP.VARIANT]
         if meta['implementation']!=expected_version or meta['variant']!=c.ICLR_EXP.VARIANT or meta['student']!=dict(trajectory_variant='dense',acceleration_mix=0.,gain_shape=[11,1,129,768]):
             raise ValueError('ICLR checkpoint/method mismatch')
-        state=obj['state_dict'] if meta['variant']=='m5_neutral' else {k:v for k,v in obj['state_dict'].items() if not k.startswith('iclr_tgva.')}
+        state=obj['state_dict'] if meta['variant'] in ('m5_neutral','m5_paired') else {k:v for k,v in obj['state_dict'].items() if not k.startswith('iclr_tgva.')}
     if meta['epoch']!=60 and not a.allow_nonfinal:
         raise ValueError('formal evaluation must reload epoch60')
     if meta['original_clip_sha256']!=file_digest(c.ICLR_EXP.ASSETS.ORIGINAL_CLIP):
@@ -128,7 +128,7 @@ def main():
     model.load_state_dict(state,strict=True)
     if a.full_checkpoint:
         full=torch.load(a.full_checkpoint,map_location='cpu',weights_only=False)
-        full_state=full['state_dict'] if meta['variant']=='m5_neutral' else {k:v for k,v in full['state_dict'].items() if not k.startswith('iclr_tgva.')}
+        full_state=full['state_dict'] if meta['variant'] in ('m5_neutral','m5_paired') else {k:v for k,v in full['state_dict'].items() if not k.startswith('iclr_tgva.')}
         if full['metadata']!=meta or set(full_state)!=set(state) or not all(torch.equal(v,full_state[k]) for k,v in state.items()):
             raise ValueError('deployment and complete checkpoint tensors/metadata differ')
         del full,full_state
