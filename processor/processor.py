@@ -475,6 +475,11 @@ def do_train(cfg,
         if cfg.M2.RESUME:
             start_epoch, m5_iterations, m5_updates, m5_amp_skips, m5_elapsed = restore_training(
                 cfg.M2.RESUME, model_meta, optimizer, scheduler, scaler)
+    iclr_run = None
+    if cfg.ICLR_EXP.ENABLED:
+        from tools.iclr_exp.runtime import I1Run
+        iclr_run = I1Run(cfg, model_meta, train_loader, optimizer, scheduler, scaler)
+        start_epoch = iclr_run.start_epoch
     m5_wall_start = time.time()
     feat_dim = getattr(model_meta, 'in_planes', 768)
     num_classes = getattr(model_meta, 'num_classes', 500)
@@ -544,6 +549,11 @@ def do_train(cfg,
                         ce_split_view, ce_split_mod, ce_groups)
                 loss, il, tl = loss_fn(cls_score, global_feat, target_rep,
                                        target_ce=target_ce)
+                if iclr_run is not None:
+                    from loss.iclr_exp import tgva_from_aux
+                    iclr_identity = loss
+                    iclr_raw, _, _ = tgva_from_aux(aux)
+                    loss = loss + cfg.ICLR_EXP.TGVA.WEIGHT * iclr_raw
                 if m2_enabled:
                     if m2_stage == 'teacher':
                         ls = normalized_clip_logits(global_feat, model_meta.base.clip_proj,
@@ -639,6 +649,8 @@ def do_train(cfg,
                     if 'gpd' in loss_type:
                         loss += loss_gpd
 
+            if iclr_run is not None:
+                iclr_run.gradient_probe(epoch, n_iter, iclr_identity, aux)
             if ((vpr_text_weight > 0 or vpr_csd_weight > 0)
                     and vpr_aux_only):
                 # Main CE/Triplet follows the ordinary full-model path.  The
@@ -661,10 +673,13 @@ def do_train(cfg,
                 scaler.scale(total_loss).backward()
                 display_loss = total_loss.detach()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
+            if iclr_run is not None:
+                iclr_run.step(epoch, n_iter, scale_before, grad_norm, il, tl,
+                              iclr_raw, display_loss, cls_score, target_rep)
             if m2_enabled:
                 m5_iterations += 1
                 if scaler.get_scale() >= scale_before:
@@ -863,13 +878,16 @@ def do_train(cfg,
                 )
             )
 
-        if not m2_enabled and epoch % checkpoint_period == 0:
+        if not m2_enabled and iclr_run is None and epoch % checkpoint_period == 0:
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
                     torch.save(model.state_dict(), os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
             else:
                 torch.save(model.state_dict(), os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
 
+        if iclr_run is not None:
+            iclr_run.audit(epoch)
+        iclr_eval_start = time.time() if iclr_run is not None else None
         if epoch % eval_period == 0:
             model.eval()
 
@@ -904,6 +922,10 @@ def do_train(cfg,
                     logger.info(f'CMC curve, Rank-{r:<2}: {cmc[r-1]:.2%}')
             torch.cuda.empty_cache()
 
+        if iclr_run is not None:
+            if epoch % eval_period == 0:
+                iclr_run.eval_seconds += time.time() - iclr_eval_start
+            iclr_run.save(epoch, end_time-start_time, n_iter+1)
         if m2_enabled and (epoch % checkpoint_period == 0 or epoch == epochs):
             from utils.m5_checkpoint import save_training
             payload = save_training(cfg.OUTPUT_DIR, cfg.MODEL.NAME, epoch, model_meta,

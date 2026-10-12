@@ -1,0 +1,8 @@
+# I1 固定定义；不含教师资源和身份 prompt 阶段。
+ICLR_EXP:
+  VARIANT: 'tgva_ref'
+  PAIR_RNG: 'independent'
+  PROJECTION_TRAINABLE: true
+  TGVA:
+    WEIGHT: 5.0
+OUTPUT_DIR: './logs/iclr_inspired/I1_C0_TGVA_ref_seed1234'

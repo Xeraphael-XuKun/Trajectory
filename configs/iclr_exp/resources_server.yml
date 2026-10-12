@@ -1,0 +1,9 @@
+# 数据集 loader 自动在 ROOT_DIR 下追加 WHU-MARS。
+MODEL:
+  PRETRAIN_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
+DATASETS:
+  ROOT_DIR: '/mnt/cache/wanghanzhi/Datasets'
+ICLR_EXP:
+  ASSETS:
+    ORIGINAL_CLIP: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
+OUTPUT_DIR: '/mnt/cache/wanghanzhi/XK/Trajectory_runs/iclr_I1_C0_TGVA_ref_seed1234'

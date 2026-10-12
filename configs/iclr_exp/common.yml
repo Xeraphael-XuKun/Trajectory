@@ -1,0 +1,33 @@
+# 公共 C0 设置；由入口先合并 trajectory_C0.yml，再合并本文件。
+MODEL:
+  TEXT_ALIGN: false
+  VPR: false
+  MOD_DELTA: false
+  SIE_CAMERA: false
+  SIE_VIEW: false
+  CE_SPLIT_VIEW: false
+  CE_SPLIT_MODALITY: false
+  DIST_TRAIN: false
+DATASETS:
+  PROTOCOL: 'ALL'
+  SUBDIR: ''
+DATALOADER:
+  SYNC_FRAMES: false
+  TIE_AUGMENTATION: false
+  TIE_ERASING: false
+SOLVER:
+  LR_MIN_FACTOR: 0.002
+  WARMUP_LR_FACTOR: 0.01
+  TWIN_LOSS_WEIGHT: 0.0
+  TNCE_WEIGHT: 0.0
+  VPR_VIEW_TEXT_WEIGHT: 0.0
+  VPR_CSD_WEIGHT: 0.0
+  MOD_DELTA_ONLY: false
+M2:
+  ENABLED: false
+TEST:
+  NECK_FEAT: 'after'
+  METRIC: 'sysu'
+  EVAL: true
+ICLR_EXP:
+  ENABLED: true

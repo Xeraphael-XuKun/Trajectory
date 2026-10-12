@@ -1,0 +1,8 @@
+# 本地只做必要预检；完整 192 图 batch 在服务器运行。
+MODEL:
+  PRETRAIN_PATH: 'E:/CFAN/weights/ViT-B-16.pt'
+DATASETS:
+  ROOT_DIR: 'E:/CFAN/datasets'
+ICLR_EXP:
+  ASSETS:
+    ORIGINAL_CLIP: 'E:/CFAN/weights/ViT-B-16.pt'

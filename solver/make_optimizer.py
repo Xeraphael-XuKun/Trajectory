@@ -2,6 +2,9 @@ import torch
 
 
 def make_optimizer(cfg, model, center_criterion):
+    if cfg.ICLR_EXP.ENABLED:
+        from tools.iclr_exp.configuration import make_optimizer as iclr_optimizer
+        return iclr_optimizer(cfg, model, center_criterion)
     if cfg.SOLVER.MOD_DELTA_ONLY:
         # v1's central claim, made mechanical rather than argued: with every
         # other parameter frozen, an evaluation with TEST.MOD_DELTA False is the

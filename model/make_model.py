@@ -385,6 +385,17 @@ class build_transformer(nn.Module):
                                   cfg.MODEL.TEXT_MODALITY, self.text_modality_index),
                               aerial, float(self.logit_scale)))
 
+        self.iclr_enabled = bool(cfg.ICLR_EXP.ENABLED)
+        if self.iclr_enabled:
+            from tools.iclr_exp.configuration import validate
+            from model.iclr_exp.tgva_prompt import TGVAPrompts
+            validate(cfg)
+            # Construct after the original student/head; isolate auxiliary RNG.
+            with torch.random.fork_rng(devices=[]):
+                clip_state = _read_clip_checkpoint(cfg.ICLR_EXP.ASSETS.ORIGINAL_CLIP)
+                self.iclr_tgva = TGVAPrompts(clip_state)
+            self.base.clip_proj.requires_grad_(True)
+
         if pretrain_choice == 'self':
             # Deliberately last: this checkpoint carries `bottleneck.*` as well
             # as `base.*`, and those two modules do not exist until the lines
@@ -459,6 +470,18 @@ class build_transformer(nn.Module):
                                   if x.is_cuda else None)
             feat = self.bottleneck(global_feat)
             cls_score = self.classifier(feat)
+            if self.iclr_enabled:
+                if camids is None or len(imgs) != 3:
+                    raise ValueError('I1 requires three modality-major image/camera batches')
+                # Full OFF pass, live backbone gradients, independent DropPath.
+                g_off = self.base(x, trajectory_gate=x.new_zeros(x.shape[0]))
+                mods = torch.arange(3, device=x.device).repeat_interleave(per_modality)
+                cams = torch.cat(camids).to(x.device)
+                views = ((cams == 5) | (cams == 6)).long()
+                return cls_score, global_feat, feat, dict(kind='iclr_tgva',
+                    g_on=global_feat, g_off=g_off, mods=mods, views=views,
+                    projection=self.base.clip_proj, text=self.iclr_tgva(),
+                    scale=self.iclr_tgva.logit_scale)
 
             if replay_aux:
                 rows = torch.arange(x.shape[0], device=x.device)
