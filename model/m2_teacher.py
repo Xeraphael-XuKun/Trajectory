@@ -34,6 +34,7 @@ class ConditionalVisualTeacher(nn.Module):
         c = cfg.clone()
         c.defrost()
         c.M2.ENABLED = False
+        c.R2.ENABLED = False  # R2 identifies the student, not the reused M5 teacher.
         c.MODEL.TOKEN_TRAJECTORY = False
         c.MODEL.PRETRAIN_CHOICE = 'imagenet' if load_original else 'no'
         c.MODEL.PRETRAIN_PATH = cfg.M2.CLIP_PATH
