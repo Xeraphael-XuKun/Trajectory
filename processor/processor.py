@@ -477,8 +477,8 @@ def do_train(cfg,
                 cfg.M2.RESUME, model_meta, optimizer, scheduler, scaler)
     iclr_run = None
     if cfg.ICLR_EXP.ENABLED:
-        from tools.iclr_exp.runtime import I1Run
-        iclr_run = I1Run(cfg, model_meta, train_loader, optimizer, scheduler, scaler)
+        from tools.iclr_exp.runtime import make_run
+        iclr_run = make_run(cfg, model_meta, train_loader, optimizer, scheduler, scaler)
         start_epoch = iclr_run.start_epoch
     m5_wall_start = time.time()
     feat_dim = getattr(model_meta, 'in_planes', 768)
@@ -550,10 +550,10 @@ def do_train(cfg,
                 loss, il, tl = loss_fn(cls_score, global_feat, target_rep,
                                        target_ce=target_ce)
                 if iclr_run is not None:
-                    from loss.iclr_exp import tgva_from_aux
                     iclr_identity = loss
-                    iclr_raw, _, _ = tgva_from_aux(aux)
-                    loss = loss + cfg.ICLR_EXP.TGVA.WEIGHT * iclr_raw
+                    aux["targets"] = target_rep
+                    iclr_raw = iclr_run.loss(aux, target_rep)
+                    loss = loss + iclr_run.loss_weight * iclr_raw
                 if m2_enabled:
                     if m2_stage == 'teacher':
                         ls = normalized_clip_logits(global_feat, model_meta.base.clip_proj,
@@ -650,7 +650,7 @@ def do_train(cfg,
                         loss += loss_gpd
 
             if iclr_run is not None:
-                iclr_run.gradient_probe(epoch, n_iter, iclr_identity, aux)
+                iclr_run.gradient_probe(epoch, n_iter, iclr_identity, aux, loss_fn)
             if ((vpr_text_weight > 0 or vpr_csd_weight > 0)
                     and vpr_aux_only):
                 # Main CE/Triplet follows the ordinary full-model path.  The

@@ -25,8 +25,7 @@ def validate(c):
     if not c.ICLR_EXP.ENABLED:
         return
     checks = {
-        'only implemented variant tgva_ref': c.ICLR_EXP.VARIANT == 'tgva_ref',
-        'independent DropPath / trainable projection': c.ICLR_EXP.PAIR_RNG == 'independent' and c.ICLR_EXP.PROJECTION_TRAINABLE,
+        'implemented variant': c.ICLR_EXP.VARIANT in ('tgva_ref', 'm5_neutral'),
         'original dense velocity-only C0': c.MODEL.TOKEN_TRAJECTORY and c.MODEL.TOKEN_TRAJECTORY_VARIANT == 'dense' and c.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX == 0.,
         'CLIP ViT / original pretrained initialization': c.MODEL.TRANSFORMER_TYPE == 'vit_base_clip' and c.MODEL.PRETRAIN_CHOICE == 'imagenet',
         'legacy auxiliaries disabled': not any((c.M2.ENABLED, c.MODEL.TEXT_ALIGN, c.MODEL.VPR, c.MODEL.MOD_DELTA, c.MODEL.SIE_CAMERA, c.MODEL.SIE_VIEW, c.MODEL.CE_SPLIT_VIEW, c.MODEL.CE_SPLIT_MODALITY)),
@@ -43,9 +42,17 @@ def validate(c):
         'ALL post-BN protocol': c.DATASETS.PROTOCOL == 'ALL' and c.TEST.NECK_FEAT == 'after' and c.TEST.FEAT_NORM == 'yes' and c.TEST.METRIC == 'sysu' and not c.TEST.RE_RANKING and c.TEST.TOP_K_EVAL == 0,
         'one original CLIP source': bool(c.MODEL.PRETRAIN_PATH) and os.path.abspath(c.MODEL.PRETRAIN_PATH) == os.path.abspath(c.ICLR_EXP.ASSETS.ORIGINAL_CLIP),
     }
+    if c.ICLR_EXP.VARIANT == 'tgva_ref':
+        checks['independent DropPath / trainable projection'] = c.ICLR_EXP.PAIR_RNG == 'independent' and c.ICLR_EXP.PROJECTION_TRAINABLE
+    elif c.ICLR_EXP.VARIANT == 'm5_neutral':
+        checks.pop('reference TGVA settings')
+        checks['single branch / fixed projection'] = c.ICLR_EXP.PAIR_RNG == 'none' and not c.ICLR_EXP.PROJECTION_TRAINABLE
+        checks['no teacher/prompt training or auxiliary warmup'] = c.ICLR_EXP.LOSS_FROM_FIRST_STEP and c.ICLR_EXP.TEACHER_REUSE_ONLY and not c.ICLR_EXP.TEACHER_TRAIN_ALLOWED and not c.ICLR_EXP.ID_PROMPT_TRAIN_ALLOWED
+        checks['fixed neutral KD'] = c.ICLR_EXP.KD.BASE_TEMPERATURE == .07 and c.ICLR_EXP.KD.DISTILL_TEMPERATURE == 2. and c.ICLR_EXP.KD.WEIGHT == .5 and c.ICLR_EXP.NEUTRAL.COEFFICIENT == 1. and c.ICLR_EXP.NEUTRAL.CROSSFIT_FOLDS == 5 and c.ICLR_EXP.NEUTRAL.CROSSFIT_SEED == 20261012
+        checks['complete old M5 resource paths'] = all(getattr(c.ICLR_EXP.ASSETS,k) for k in ('TEACHER_CKPT','TEXT_BANK','PROMPT_CKPT','NEUTRAL_STATS'))
     failed = [name for name, ok in checks.items() if not ok]
     if failed:
-        raise ValueError('I1 definition mismatch: ' + '; '.join(failed))
+        raise ValueError('ICLR experiment definition mismatch: ' + '; '.join(failed))
 
 
 def make_optimizer(c, model, center):

@@ -47,7 +47,12 @@ def compare(new_dir, old_dir, label, output, filename='per_query_post.jsonl'):
         for row in rows:
             key=rank_bin(row['first_rank_old'])+'_to_'+rank_bin(row['first_rank_new'])
             transitions[key]=transitions.get(key,0)+1
-        return dict(count=len(rows),improved=int((delta>0).sum()),weakened=int((delta<0).sum()),unchanged=int((delta==0).sum()),
+        negative_conditions={};new_negative_conditions={}
+        for row in rows:
+            key='%d_%d'%(row['top1_new_modality'],row['top1_new_platform'])
+            if not row['R1_new']:negative_conditions[key]=negative_conditions.get(key,0)+1
+            if row['R1_old'] and not row['R1_new']:new_negative_conditions[key]=new_negative_conditions.get(key,0)+1
+        return dict(top1_negative_conditions=negative_conditions,new_wrong_top1_conditions=new_negative_conditions,count=len(rows),improved=int((delta>0).sum()),weakened=int((delta<0).sum()),unchanged=int((delta==0).sum()),
             wrong_to_correct=sum(r['R1_old']==0 and r['R1_new']==1 for r in rows),
             correct_to_wrong=sum(r['R1_old']==1 and r['R1_new']==0 for r in rows),
             remain_correct=sum(r['R1_old']==1 and r['R1_new']==1 for r in rows),
@@ -80,16 +85,24 @@ def main():
         comparisons[label]=compare(source,Path(path),label,output) if path else None
         if path and (source/'per_query_G_to_A_post.jsonl').exists() and (Path(path)/'per_query_G_to_A_post.jsonl').exists():
             comparisons[label+'_G_to_A']=compare(source,Path(path),label+'_G_to_A',output,'per_query_G_to_A_post.jsonl')
-    payload=dict(evaluation=result,manifest=manifest,budget=budget,audits=audits,gradient_probes=gradients,paired_comparisons=comparisons)
+        for key in ('0_to_2','1_to_2','2_to_0','2_to_1','2_to_2'):
+            filename='per_query_mod_'+key+'_post.jsonl'
+            if path and (source/filename).exists() and (Path(path)/filename).exists():
+                comparisons[label+'_mod_'+key]=compare(source,Path(path),label+'_mod_'+key,output,filename)
+    augmented={path.stem:read_json(path) for path in sorted(run.glob('target_augmented_epoch*.json'))}
+    stats=read_json(run/'neutral_stats_summary.json') if (run/'neutral_stats_summary.json').exists() else None
+    payload=dict(augmented_target_audits=augmented,neutral_crossfit=stats,evaluation=result,manifest=manifest,budget=budget,audits=audits,gradient_probes=gradients,paired_comparisons=comparisons)
     (output/'handoff.json').write_text(json.dumps(payload,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
     def metric(value):return 'NA' if value is None else '%.2f'%(100*value)
-    lines=['# I1 C0＋TGVA-Ref 实验结果交接','',
+    neutral=result.get('variant')=='m5_neutral'
+    name='I2 M5-Neutral' if neutral else 'I1 C0＋TGVA-Ref'
+    lines=['# '+name+' 实验结果交接','',
         '本文件报告实际测量与证据；方法定义请配合实验方案阅读。',
         '','## 执行状态与证据','',
         '- 正式epoch60完整评测：'+('是' if result['formal'] else '否；这是小样本/非最终工件核验，不能作为正式成绩'),
         '- 工件epoch：'+str(result['epoch']),'- 权重：`'+result['checkpoint']+'`',
         '- 权重SHA256：`'+result['checkpoint_sha256']+'`','- 独立严格重载，FP32、SYSU同相机过滤、无rerank；pre/post读取等价检查通过。',
-        '- I1不使用M5教师、身份文本表或中性偏移。',
+        ('- I2复用冻结旧M5教师、身份文本表与固定训练集偏移；主比较对象为旧M5。' if neutral else '- I1不使用M5教师、身份文本表或中性偏移。'),
         '','## 主结果与完整分组','',
         '| 读出 | mAP | R1 | R5 | R10 | mINP | 有效query |','|---|---:|---:|---:|---:|---:|---:|']
     for neck in ('post','pre'):
@@ -101,19 +114,24 @@ def main():
                 lines.append('| '+key+' | '+' | '.join(metric(s[k]) for k in ('mAP','R1','R5','R10','mINP'))+' | %d/%d | %d |'%(s['valid_queries'],s['query_count'],s['gallery_count']))
     lines+=['','模态0/1/2为RGB/IR/Thermal，平台0/1为地面/航拍。前三类分组同时限制query/gallery；最后一类保持完整gallery。NA表示无有效query，不能赋零。结构化指标和AP_delta使用0–1；表格乘100显示百分数，百分点差为100×原始差。',
         '','## 机制、预算与运行质量','',
-        '以下记录保留实际数值，避免仅凭总体loss或条件准确率判断机制成立。四格任务、gain、实际修正比、锚点余弦、投影漂移、开关特征差与分项梯度均来自固定训练面板/规定batch，不等同于测试检索成功。']
-    for title,value in (('资源与实现manifest',manifest),('运行预算',budget),('固定面板审计',audits),('分项梯度',gradients)):
+        ('以下记录保留原教师/中性目标/学生的逐图身份信息、交叉拟合、gain、实际修正比、投影漂移、开关特征差和分项梯度。干净面板与固定增强batch分别报告；都不等同于测试检索成功。' if neutral else '以下记录保留实际数值，避免仅凭总体loss或条件准确率判断机制成立。四格任务、gain、实际修正比、锚点余弦、投影漂移、开关特征差与分项梯度均来自固定训练面板/规定batch，不等同于测试检索成功。')]
+    for title,value in (('资源与实现manifest',manifest),('运行预算',budget),('固定面板审计',audits),('固定增强面板目标',augmented),('偏移交叉拟合',stats),('分项梯度',gradients)):
         lines+=['','### '+title,'']
         lines+=['未提供，无法确认。'] if value is None or value=={} else ['```json',json.dumps(value,ensure_ascii=False,indent=2),'```']
+    lines+=['','## 历史文档参考与重评测差异','', '以下历史值来自第一阶段结果说明，未当成本次重评测：C0 post-BN mAP/R1=13.52/33.61；旧M5=15.01/35.30。']
+    for label,path,ma,r1 in (('C0',a.c0_evaluation,13.52,33.61),('M5',a.m5_evaluation,15.01,35.30)):
+        if path:
+            measured=read_json(Path(path)/'results.json')['post']['ALL']
+            lines.append('- '+label+' 重评测 mAP/R1='+metric(measured['mAP'])+'/'+metric(measured['R1'])+'；与文档之差(pp)=%.4f/%.4f。保留差异，不能替换成更有利的数字。'%(100*measured['mAP']-ma,100*measured['R1']-r1))
     lines+=['','## 改善与削弱的query','']
     for label,value in comparisons.items():
         lines+=['','### 对比 '+label,'']
         lines+=['未提供匹配参考导出，未完成逐query配对；不能从聚合指标编造样本对变化。'] if value is None else ['```json',json.dumps(value,ensure_ascii=False,indent=2),'```','完整配对见 `paired_'+label+'.csv`。']
     lines+=['','## 解释边界与待完成工作','',
-        '六锚点目标达标不证明身份信息保留或几何纠正。开关差距增大需排查关闭分支恶化；同模态、Thermal跨模态及G→A应结合完整分组和逐query证据判断。单seed结果不能证明训练稳定性。',
+        ('估计集合的平均空地logits差归零是构造恒等式，不证明身份信息保留、拟合外收益或检索改善。教师弱于旧学生，中性目标可能不可实现。需结合配对/地面-only目标诊断、Thermal和G→A逐query比较。单seed不能证明稳定性。' if neutral else '六锚点目标达标不证明身份信息保留或几何纠正。开关差距增大需排查关闭分支恶化；同模态、Thermal跨模态及G→A应结合完整分组和逐query证据判断。单seed结果不能证明训练稳定性。'),
         '本脚本不自动推断图像遮挡/背景，不自动改变权重、选择最佳epoch或启动额外训练。缺少参考工件和未执行项目如实保留。']
-    (output/'I1_实验结果说明.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
-    print(output/'I1_实验结果说明.md')
+    (output/(('I2' if neutral else 'I1')+'_实验结果说明.md')).write_text('\n'.join(lines)+'\n',encoding='utf-8')
+    print(output/(('I2' if neutral else 'I1')+'_实验结果说明.md'))
 
 
 if __name__=='__main__':main()

@@ -388,13 +388,15 @@ class build_transformer(nn.Module):
         self.iclr_enabled = bool(cfg.ICLR_EXP.ENABLED)
         if self.iclr_enabled:
             from tools.iclr_exp.configuration import validate
-            from model.iclr_exp.tgva_prompt import TGVAPrompts
             validate(cfg)
-            # Construct after the original student/head; isolate auxiliary RNG.
-            with torch.random.fork_rng(devices=[]):
-                clip_state = _read_clip_checkpoint(cfg.ICLR_EXP.ASSETS.ORIGINAL_CLIP)
-                self.iclr_tgva = TGVAPrompts(clip_state)
-            self.base.clip_proj.requires_grad_(True)
+            self.iclr_variant = cfg.ICLR_EXP.VARIANT
+            if self.iclr_variant == 'tgva_ref':
+                from model.iclr_exp.tgva_prompt import TGVAPrompts
+                # Construct after the original student/head; isolate auxiliary RNG.
+                with torch.random.fork_rng(devices=[]):
+                    clip_state = _read_clip_checkpoint(cfg.ICLR_EXP.ASSETS.ORIGINAL_CLIP)
+                    self.iclr_tgva = TGVAPrompts(clip_state)
+            self.base.clip_proj.requires_grad_(cfg.ICLR_EXP.PROJECTION_TRAINABLE)
 
         if pretrain_choice == 'self':
             # Deliberately last: this checkpoint carries `bottleneck.*` as well
@@ -472,7 +474,13 @@ class build_transformer(nn.Module):
             cls_score = self.classifier(feat)
             if self.iclr_enabled:
                 if camids is None or len(imgs) != 3:
-                    raise ValueError('I1 requires three modality-major image/camera batches')
+                    raise ValueError('ICLR experiments require three modality-major image/camera batches')
+                if self.iclr_variant == 'm5_neutral':
+                    mods = torch.arange(3, device=x.device).repeat_interleave(per_modality)
+                    cams = torch.cat(camids).to(x.device)
+                    return cls_score, global_feat, feat, dict(kind='iclr_neutral',
+                        g_on=global_feat, images=x, mods=mods,
+                        views=((cams == 5) | (cams == 6)).long(), projection=self.base.clip_proj)
                 # Full OFF pass, live backbone gradients, independent DropPath.
                 g_off = self.base(x, trajectory_gate=x.new_zeros(x.shape[0]))
                 mods = torch.arange(3, device=x.device).repeat_interleave(per_modality)

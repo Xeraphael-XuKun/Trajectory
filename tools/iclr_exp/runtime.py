@@ -10,6 +10,14 @@ from tools.iclr_exp.audit import build_panel, run_audit, isolated_eval
 
 VERSION = 'iclr-i1-tgva-ref-v1'
 ROOT = Path(__file__).resolve().parents[2]
+NEUTRAL_VERSION = 'iclr-i2-m5-neutral-v1'
+
+
+def make_run(c, *args):
+    if c.ICLR_EXP.VARIANT == 'm5_neutral':
+        from tools.iclr_exp.neutral_runtime import I2Run
+        return I2Run(c, *args)
+    return I1Run(c, *args)
 
 
 def git(args):
@@ -17,10 +25,19 @@ def git(args):
 
 
 def deployment_state(model):
+    if getattr(model, 'iclr_variant', None) != 'tgva_ref':
+        return model.state_dict()
     return {k: v for k, v in model.state_dict().items() if not k.startswith('iclr_tgva.')}
 
 
 class I1Run:
+    loss_weight = 5.
+    resume_keys = ('implementation','variant','original_clip_sha256','student','prompt')
+
+    def loss(self, aux, targets=None):
+        from loss.iclr_exp import tgva_from_aux
+        return tgva_from_aux(aux)[0]
+
     def __init__(self, c, model, train_loader, optimizer, scheduler, scaler):
         self.c, self.model = c, model
         self.optimizer, self.scheduler, self.scaler = optimizer, scheduler, scaler
@@ -83,7 +100,7 @@ class I1Run:
         with open(os.path.join(self.c.OUTPUT_DIR, 'training_terms.jsonl'), 'a', encoding='utf-8') as f:
             f.write(json.dumps(row, ensure_ascii=False, allow_nan=False)+'\n')
 
-    def gradient_probe(self, epoch, iteration, identity_loss, aux):
+    def gradient_probe(self, epoch, iteration, identity_loss, aux, loss_fn=None):
         if iteration != 0 or epoch not in (1,10,30,60):
             return
         from loss.iclr_exp import tgva_from_aux
@@ -116,7 +133,8 @@ class I1Run:
         payload = dict(state_dict=self.model.state_dict(), metadata=meta,
             optimizer=self.optimizer.state_dict(), scheduler=self.scheduler.state_dict(),
             scaler=self.scaler.state_dict(), rng=rng_state(), audit_panel=self.panel,
-            initial_projection=self.initial_projection, initial_anchors=self.initial_anchors)
+            initial_projection=self.initial_projection, initial_anchors=self.initial_anchors,
+            probe_batch=getattr(self, "probe_batch", None))
         temporary = os.path.join(self.c.OUTPUT_DIR, 'resume_latest.tmp')
         torch.save(payload, temporary)
         os.replace(temporary, os.path.join(self.c.OUTPUT_DIR, 'resume_latest.pth'))
@@ -132,21 +150,22 @@ class I1Run:
         from yacs.config import CfgNode
         obj = torch.load(path, map_location='cpu', weights_only=False)
         meta = obj['metadata']
-        for key in ('implementation','variant','original_clip_sha256','student','prompt'):
+        for key in self.resume_keys:
             if meta[key] != self.manifest[key]:
-                raise ValueError('I1 resume manifest mismatch: '+key)
+                raise ValueError('ICLR resume manifest mismatch: '+key)
         # YAML canonicalizes tuple-valued legacy defaults to lists on reload.
         old, new = CfgNode.load_cfg(meta['config']), CfgNode.load_cfg(self.c.dump())
         for c in (old,new):
             c.OUTPUT_DIR = ''; c.ICLR_EXP.RESUME = ''
         if old != new:
-            raise ValueError('I1 resume recipe differs')
+            raise ValueError('ICLR resume recipe differs')
         self.model.load_state_dict(obj['state_dict'], strict=True)
         self.optimizer.load_state_dict(obj['optimizer'])
         self.scheduler.load_state_dict(obj['scheduler'])
         self.scaler.load_state_dict(obj['scaler'])
         self.initial_projection, self.initial_anchors = obj['initial_projection'], obj['initial_anchors']
         self.panel = obj['audit_panel']
+        self.probe_batch = obj.get('probe_batch')
         b = meta['budget']
         self.batches, self.updates, self.skips = b['actual_batches'], b['optimizer_updates'], b['amp_skips']
         self.epoch_train_seconds, self.eval_seconds, self.audit_seconds = b['training_loop_seconds'], b['periodic_eval_seconds'], b['audit_seconds']

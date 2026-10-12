@@ -1,0 +1,14 @@
+# 只有 C0 开启学生分支；旧 M2 dispatcher 保持关闭。
+ICLR_EXP:
+  VARIANT: 'm5_neutral'
+  PAIR_RNG: 'none'
+  PROJECTION_TRAINABLE: false
+  KD:
+    BASE_TEMPERATURE: 0.07
+    DISTILL_TEMPERATURE: 2.0
+    WEIGHT: 0.5
+  NEUTRAL:
+    COEFFICIENT: 1.0
+    CROSSFIT_FOLDS: 5
+    CROSSFIT_SEED: 20261012
+OUTPUT_DIR: './logs/iclr_inspired/I2_M5_Neutral_seed1234'

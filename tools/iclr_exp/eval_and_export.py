@@ -49,16 +49,19 @@ def ranking_rows(qf,gf,queries,gallery,q_chunk=64):
     return rows
 
 
-def all_groups(qf,gf,qindex,gindex):
+def all_groups(qf,gf,qindex,gindex,subtask_rows=None):
     import torch
     rows=ranking_rows(qf,gf,qindex,gindex)
     result=dict(ALL=summarize(rows,len(gindex)),query_conditions_full_gallery={},modality_pairs={},platform_pairs={},condition_pairs={})
     def subset(name, selector_q, selector_g):
         qi=[i for i,r in enumerate(qindex) if selector_q(r)]
         gi=[i for i,r in enumerate(gindex) if selector_g(r)]
+        export=subtask_rows is not None and name in ('0_to_2','1_to_2','2_to_0','2_to_1','2_to_2')
+        if export:subtask_rows[name]=[]
         if not qi or not gi:
             return summarize([],len(gi))
         sub=ranking_rows(qf[torch.tensor(qi)],gf[torch.tensor(gi)],[qindex[i] for i in qi],[gindex[i] for i in gi])
+        if export:subtask_rows[name]=sub
         return summarize(sub,len(gi))
     for m in range(3):
         for n in range(3):
@@ -80,8 +83,9 @@ def all_groups(qf,gf,qindex,gindex):
 
 
 def main():
-    p=argparse.ArgumentParser(description='I1 epoch60独立重载与完整排序导出')
-    p.add_argument('--resources',required=True); p.add_argument('--checkpoint',required=True)
+    p=argparse.ArgumentParser(description='ICLR epoch60及历史C0/M5独立严格重载与完整排序导出')
+    p.add_argument('--config',default=str(ROOT/'configs/iclr_exp/m5_neutral.yml'));
+    p.add_argument('--reference-method',choices=['c0','m5']);p.add_argument('--reference-log'); p.add_argument('--resources',required=True); p.add_argument('--checkpoint',required=True)
     p.add_argument('--full-checkpoint'); p.add_argument('--output',required=True)
     p.add_argument('--device',default='cuda',choices=['cpu','cuda'])
     p.add_argument('--batch-size',type=int,default=1024); p.add_argument('--workers',type=int,default=8)
@@ -98,24 +102,33 @@ def main():
     from datasets.make_dataloader import val_collate_fn
     from model import make_model
     from tools.iclr_exp.configuration import load_config
-    from tools.iclr_exp.runtime import VERSION,git
+    from tools.iclr_exp.runtime import VERSION,NEUTRAL_VERSION,git
     from tools.m2.artifacts import file_digest
-    c=load_config(resources=a.resources)
+    c=load_config(variant=a.config,resources=a.resources)
     obj=torch.load(a.checkpoint,map_location='cpu',weights_only=False)
-    meta=obj['metadata']
-    if meta['implementation']!=VERSION or meta['variant']!='tgva_ref' or meta['student']!=dict(trajectory_variant='dense',acceleration_mix=0.,gain_shape=[11,1,129,768]):
-        raise ValueError('I1 checkpoint/method mismatch')
+    if a.reference_method:
+        if a.full_checkpoint:raise ValueError('reference mode accepts its historical final checkpoint only')
+        from tools.iclr_exp.references import reference_checkpoint
+        c,meta,state=reference_checkpoint(a.reference_method,obj,c,a.checkpoint,a.reference_log)
+        expected_version=meta['implementation']
+    else:
+        meta=obj['metadata']
+        expected_version = NEUTRAL_VERSION if c.ICLR_EXP.VARIANT == 'm5_neutral' else VERSION
+        if meta['implementation']!=expected_version or meta['variant']!=c.ICLR_EXP.VARIANT or meta['student']!=dict(trajectory_variant='dense',acceleration_mix=0.,gain_shape=[11,1,129,768]):
+            raise ValueError('ICLR checkpoint/method mismatch')
+        state=obj['state_dict'] if meta['variant']=='m5_neutral' else {k:v for k,v in obj['state_dict'].items() if not k.startswith('iclr_tgva.')}
     if meta['epoch']!=60 and not a.allow_nonfinal:
         raise ValueError('formal evaluation must reload epoch60')
-    if meta['original_clip_sha256']!=file_digest(c.MODEL.PRETRAIN_PATH):
+    if meta['original_clip_sha256']!=file_digest(c.ICLR_EXP.ASSETS.ORIGINAL_CLIP):
         raise ValueError('original CLIP source differs')
-    c=c.clone(); c.defrost(); c.ICLR_EXP.ENABLED=False; c.freeze()
+    c=c.clone(); c.defrost(); c.ICLR_EXP.ENABLED=False; c.MODEL.PRETRAIN_CHOICE='no'; c.freeze()
+    from utils.runtime import configure_cudnn,runtime_summary
+    configure_cudnn(c.SOLVER.CUDNN_BENCHMARK)
     model=make_model(c,500,7,2)
-    state={k:v for k,v in obj['state_dict'].items() if not k.startswith('iclr_tgva.')}
     model.load_state_dict(state,strict=True)
     if a.full_checkpoint:
         full=torch.load(a.full_checkpoint,map_location='cpu',weights_only=False)
-        full_state={k:v for k,v in full['state_dict'].items() if not k.startswith('iclr_tgva.')}
+        full_state=full['state_dict'] if meta['variant']=='m5_neutral' else {k:v for k,v in full['state_dict'].items() if not k.startswith('iclr_tgva.')}
         if full['metadata']!=meta or set(full_state)!=set(state) or not all(torch.equal(v,full_state[k]) for k,v in state.items()):
             raise ValueError('deployment and complete checkpoint tensors/metadata differ')
         del full,full_state
@@ -153,12 +166,17 @@ def main():
         for neck in ('post','pre'):
             features[split][neck]=F.normalize(torch.cat(features[split][neck]),dim=1)
             np.save(output/(split+'_features_'+neck+'.npy'),features[split][neck].numpy())
-    result=dict(implementation=VERSION,checkpoint=str(Path(a.checkpoint).resolve()),checkpoint_sha256=file_digest(a.checkpoint),
-        evaluation_commit=git(['rev-parse','HEAD']).strip(),config=c.dump(),epoch=meta['epoch'],
+    result=dict(implementation=expected_version,variant=meta['variant'],checkpoint=str(Path(a.checkpoint).resolve()),checkpoint_sha256=file_digest(a.checkpoint),
+        evaluation_commit=git(['rev-parse','HEAD']).strip(),config=c.dump(),epoch=meta['epoch'],runtime=runtime_summary(),
+        reference_evidence=meta.get('reference_evidence'),
         formal=not bool(a.limit or a.allow_nonfinal),metric='sysu',precision='FP32 no AMP',
         query_index_sha256=file_digest(output/'query_index.jsonl'),gallery_index_sha256=file_digest(output/'gallery_index.jsonl'),readout_equivalence=True)
     for neck in ('post','pre'):
-        scores,rows=all_groups(features['query'][neck],features['gallery'][neck],index['query'],index['gallery'])
+        subtasks={}
+        scores,rows=all_groups(features['query'][neck],features['gallery'][neck],index['query'],index['gallery'],subtasks)
+        for key,subrows in subtasks.items():
+            with (output/('per_query_mod_'+key+'_'+neck+'.jsonl')).open('w',encoding='utf-8') as stream:
+                for row in subrows:stream.write(json.dumps(row)+'\n')
         result[neck]=scores
         with (output/('per_query_'+neck+'.jsonl')).open('w',encoding='utf-8') as f:
             for row in rows:f.write(json.dumps(row)+'\n')

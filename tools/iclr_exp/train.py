@@ -9,10 +9,10 @@ sys.path.insert(0, str(ROOT))
 
 
 def parser():
-    p = argparse.ArgumentParser(description='I1 C0+TGVA-Ref')
+    p = argparse.ArgumentParser(description='ICLR-inspired student; this branch defaults to I2 M5-Neutral')
     p.add_argument('--base-config')
     p.add_argument('--common-config')
-    p.add_argument('--config')
+    p.add_argument('--config', default=str(ROOT/'configs/iclr_exp/m5_neutral.yml'))
     p.add_argument('--resources')
     p.add_argument('--resume', default='')
     p.add_argument('opts', nargs=argparse.REMAINDER)
@@ -54,7 +54,7 @@ def main():
         f.write(c.dump())
     with open(os.path.join(c.OUTPUT_DIR, 'optimizer_roles.json'), 'w', encoding='utf-8') as f:
         json.dump(model.iclr_optimizer_roles, f, indent=2)
-    log.info('I1: no teacher or ID prompt stage; 60-epoch student training; nominal loader length=%d; actual batches recorded separately', len(train_loader))
+    log.info('%s: 60-epoch student; original identity loop; nominal loader length=%d; observed batches counted separately', c.ICLR_EXP.VARIANT, len(train_loader))
     do_train(c, model, center, train_loader, val_loaders, optimizer, opt_center,
              scheduler, loss_fn, queries, 0)
 

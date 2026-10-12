@@ -1,0 +1,12 @@
+MODEL:
+  PRETRAIN_PATH: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
+DATASETS:
+  ROOT_DIR: '/mnt/cache/wanghanzhi/Datasets'
+ICLR_EXP:
+  ASSETS:
+    ORIGINAL_CLIP: '/mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt'
+    TEACHER_CKPT: '/mnt/cache/wanghanzhi/XK/m2-e/logs/teacher/conditional_teacher_epoch60.pth'
+    TEXT_BANK: '/mnt/cache/wanghanzhi/XK/m2-e/artifacts/shared_id_text_bank.pt'
+    PROMPT_CKPT: '/mnt/cache/wanghanzhi/XK/m2-e/artifacts/shared_id_prompts_final.pt'
+    NEUTRAL_STATS: '/mnt/cache/wanghanzhi/XK/Trajectory_runs/iclr_shared/neutral_view_shift.pt'
+OUTPUT_DIR: '/mnt/cache/wanghanzhi/XK/Trajectory_runs/iclr_I2_M5_Neutral_seed1234'
