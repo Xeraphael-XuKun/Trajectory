@@ -1,0 +1,9 @@
+{
+  "parent_code_commit": "db8a5c65ba0b7b5f0c62d00d2adb2f5e3bfe1177",
+  "sha256": {
+    "clip": "5806e77cd80f8b59890b7e101eabd078d9fb84e6937f9e85e4ecb61988df416f",
+    "m5_teacher": "f51d48b457c8b73985430224138efff00e7e26ca22721d569e714ffae62d7035",
+    "m5_text": "963ffc875fc5bbce7b6f39cb9ee8760ef94425c4202461aa5be0310bee875a67",
+    "m5_prompt": "50b58c82a14ddc0bf48fc44c346db2cd328261db73ca62e737fe1f9e27154ed0"
+  }
+}

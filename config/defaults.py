@@ -591,6 +591,13 @@ _C.M2.RESUME = ''
 _C.M2.TRAIN_STAGE = 'student'
 _C.M2.TEACHER_SAME_AUGMENTED_INPUT = True
 
+# Stage-two controls are opt-in and preserve the original M2 artifact version.
+_C.R2 = CN()
+_C.R2.ENABLED = False
+_C.R2.EXPERIMENT = ''
+_C.R2.KD_MODE = 'original'
+_C.R2.PARENT_CODE_COMMIT = ''
+
 _C.TEACHER_STAGE = CN()
 _C.TEACHER_STAGE.MAX_EPOCHS = 60
 _C.TEACHER_STAGE.USE_C0 = False

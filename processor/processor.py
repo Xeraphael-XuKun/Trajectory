@@ -450,6 +450,12 @@ def do_train(cfg,
     scaler = amp.GradScaler()
     model_meta = model.module if hasattr(model, 'module') else model
     m2_enabled = bool(cfg.M2.ENABLED)
+    r2_enabled = bool(cfg.R2.ENABLED)
+    if r2_enabled:
+        from utils.r2_experiment import r2_signature, config_differences, startup_manifest
+        r2_signature(cfg)
+        config_differences(cfg,allow_path_mapping=True)
+        from loss.r2_kd import flat_tail_kd
     m2_teacher = m2_text = None
     m2_stage = str(cfg.M2.TRAIN_STAGE)
     m2_tau, m2_weight = float(cfg.M2.KD_TEMPERATURE), float(cfg.M2.KD_WEIGHT)
@@ -469,6 +475,8 @@ def do_train(cfg,
         if m2_stage == 'student':
             m2_teacher, teacher_obj = load_teacher(cfg, model_meta.num_classes, local_rank)
         attach_metadata(model_meta, cfg, bank, teacher_obj)
+        if r2_enabled:
+            startup_manifest(cfg, model_meta, optimizer, logger)
         os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
         with open(os.path.join(cfg.OUTPUT_DIR, 'config_merged.yml'), 'w', encoding='utf-8') as stream:
             stream.write(cfg.dump())
@@ -562,7 +570,11 @@ def do_train(cfg,
                                 m2_text, cfg.M2.TEXT_TEMPERATURE)
                         ls = normalized_clip_logits(global_feat, model_meta.base.clip_proj,
                             m2_text, cfg.M2.TEXT_TEMPERATURE)
-                        m5_aux = kd_kl(lt, ls, m2_tau)
+                        if r2_enabled:
+                            m5_aux, r2_stats = flat_tail_kd(lt, ls, target_rep, m2_tau,
+                                log_statistics=(n_iter + 1) % log_period == 0)
+                        else:
+                            m5_aux = kd_kl(lt, ls, m2_tau)
                         loss = loss + m2_weight * m5_aux
                 vpr_aux_total = loss.new_zeros(())
 
@@ -679,6 +691,13 @@ def do_train(cfg,
                         logger.info('M2-5 stage=%s auxiliary=%.6g student_entropy=%.6g teacher_entropy=%s updates=%d AMP_skips=%d',
                             m2_stage, m5_aux.item(), entropy(ls, m2_tau if m2_stage == 'student' else 1.),
                             entropy(lt, m2_tau) if m2_stage == 'student' else 'N/A', m5_updates, m5_amp_skips)
+                        if r2_enabled:
+                            import json
+                            r2_stats.update(weighted_kd=m2_weight*m5_aux.detach().item(),
+                                CE=il.detach().item(),Triplet=tl.detach().item(),
+                                iterations=m5_iterations,updates=m5_updates,AMP_skips=m5_amp_skips,
+                                teacher_updates=0,prompt_updates=0)
+                            logger.info('R2 FlatTail %s', json.dumps(r2_stats,sort_keys=True))
 
 
             if use_aux_modules:
