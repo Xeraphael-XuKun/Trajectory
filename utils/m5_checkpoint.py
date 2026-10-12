@@ -12,6 +12,9 @@ def compare_config(old, new):
         c.TEACHER_STAGE.OUTPUT_DIR = ''
         c.M2.RESUME = ''
         c.M2.PROMPT_RESUME = ''
+        # Adding default-disabled R2 keys must not break historical M5 resume.
+        if 'R2' in c and not c.R2.ENABLED:
+            del c['R2']
     if a != b:
         raise ValueError('M2-5 resume training settings differ')
 
@@ -34,6 +37,9 @@ def attach_metadata(model, c, bank, teacher=None):
     if teacher is not None:
         model.m5_metadata['teacher_sha256'] = file_digest(c.M2.TEACHER_WEIGHT)
         model.m5_metadata['teacher_metadata'] = teacher['metadata']
+    if c.R2.ENABLED:
+        from utils.r2_experiment import r2_signature
+        model.m5_metadata['r2'] = r2_signature(c)
 
 def load_teacher(c, num_classes, device):
     from model.m2_teacher import ConditionalVisualTeacher
@@ -73,9 +79,13 @@ def save_training(output, name, epoch, model, optimizer, scheduler, scaler, iter
         torch.save({'state_dict': state, 'metadata': meta}, os.path.join(output, stem + '_student.pth'))
     return payload
 
-def restore_training(path, model, optimizer, scheduler, scaler):
+def restore_training(path, model, optimizer, scheduler, scaler, allow_preflight=False):
     obj = torch.load(path, map_location='cpu', weights_only=False)
     meta = obj['metadata']
+    if meta.get('r2_preflight_only') and not allow_preflight:
+        raise ValueError('R2 preflight checkpoint cannot resume formal training')
+    if meta.get('r2') != model.m5_metadata.get('r2'):
+        raise ValueError('R2 resume experiment/mode/parent differs; original M5/E1 states cannot resume E2')
     for key in ('variant', 'implementation', 'stage', 'text_sha256', 'teacher_architecture', 'student', 'teacher_sha256'):
         if meta.get(key) != model.m5_metadata.get(key):
             raise ValueError('M2-5 resume manifest differs: ' + key)
@@ -85,4 +95,6 @@ def restore_training(path, model, optimizer, scheduler, scaler):
     scheduler.load_state_dict(obj['scheduler'])
     scaler.load_state_dict(obj['scaler'])
     restore_rng(obj['rng'])
+    if 'r2_initial_state_sha256' in meta:
+        model.m5_metadata['r2_initial_state_sha256'] = meta['r2_initial_state_sha256']
     return meta['epoch'] + 1, meta['actual_iterations'], meta['optimizer_updates'], meta['amp_skips'], meta['stage_seconds']

@@ -179,6 +179,10 @@ class build_transformer(nn.Module):
             print('PRETRAIN_CHOICE is "no": training from random initialisation')
 
         self.m5_active = bool(cfg.M2.ENABLED)
+        self.r2_signature = None
+        if cfg.R2.ENABLED:
+            from utils.r2_experiment import r2_signature
+            self.r2_signature = r2_signature(cfg)
         self.trajectory_accel_mix = cfg.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX
         if self.m5_active:
             if cfg.M2.TRAIN_STAGE != 'student':
@@ -567,6 +571,8 @@ class build_transformer(nn.Module):
         own = self.state_dict()
         meta = obj.get('metadata')
         if meta is not None and meta.get('variant') == 'conditional_teacher_distill':
+            if meta.get('r2') != self.r2_signature:
+                raise ValueError('R2 deployment experiment/mode/parent differs from configuration')
             from tools.m2.artifacts import VERSION
             signature = {'trajectory_variant': self.base.token_trajectory_variant,
                 'acceleration_mix': self.trajectory_accel_mix,
