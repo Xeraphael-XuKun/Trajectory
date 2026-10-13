@@ -572,7 +572,7 @@ class build_transformer(nn.Module):
                 'acceleration_mix': self.trajectory_accel_mix,
                 'gain_shape': list(self.base.token_trajectory.gain.shape)} if self.use_token_trajectory else None
             if meta['implementation'] != VERSION or meta['stage'] != 'student' or meta['student'] != signature:
-                raise ValueError('M2-5 deployment requires the saved original C0 student settings')
+                raise ValueError('M2-5 checkpoint/config student backbone or C0 settings differ')
             required = {key for key in own if not key.startswith('classifier.')}
             keys = {key.replace('module.', '') for key in param_dict}
             if not required.issubset(keys):

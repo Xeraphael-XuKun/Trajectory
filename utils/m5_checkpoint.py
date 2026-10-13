@@ -30,7 +30,8 @@ def attach_metadata(model, c, bank, teacher=None):
         'text_sha256': file_digest(c.M2.TEXT_BANK), 'teacher_architecture': architecture(c),
         'student': {'trajectory_variant': c.MODEL.TOKEN_TRAJECTORY_VARIANT,
             'acceleration_mix': c.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX,
-            'gain_shape': list(model.base.token_trajectory.gain.shape)} if c.M2.TRAIN_STAGE == 'student' else None}
+            'gain_shape': list(model.base.token_trajectory.gain.shape)} if (
+                c.M2.TRAIN_STAGE == 'student' and c.MODEL.TOKEN_TRAJECTORY) else None}
     if teacher is not None:
         model.m5_metadata['teacher_sha256'] = file_digest(c.M2.TEACHER_WEIGHT)
         model.m5_metadata['teacher_metadata'] = teacher['metadata']

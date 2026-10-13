@@ -160,21 +160,27 @@ def check(cfg, device='cpu', export_dir=None):
         lt = normalized_clip_logits(teacher.forward_pre_bn(joined, mods, plats), teacher.base.clip_proj, text)
     ls = normalized_clip_logits(g, student.base.clip_proj, text)
     kd = kd_kl(lt, ls, c.M2.KD_TEMPERATURE)
-    subset = [student.base.patch_embed.proj.weight, student.base.token_trajectory.gain,
-        student.bottleneck.weight, student.classifier.weight]
+    visual = [student.base.patch_embed.proj.weight]
+    if c.MODEL.TOKEN_TRAJECTORY:
+        visual.append(student.base.token_trajectory.gain)
+    subset = visual + [student.bottleneck.weight, student.classifier.weight]
     grads = torch.autograd.grad(kd, subset, retain_graph=True, allow_unused=True)
-    assert all(torch.isfinite(grad).all() and grad.norm() > 0 for grad in grads[:2])
-    assert grads[2] is None and grads[3] is None
+    assert all(torch.isfinite(grad).all() and grad.norm() > 0 for grad in grads[:len(visual)])
+    assert grads[-2] is None and grads[-1] is None
     (F.cross_entropy(score, target) + criterion(g, target)[0] + c.M2.KD_WEIGHT*kd).backward()
     assert int(student.bottleneck.num_batches_tracked) == bn_start + 1
     assert all(p.grad is None for p in teacher.parameters())
     torch.nn.utils.clip_grad_norm_(student.parameters(), 1.)
     opt_s.step()
-    assert student.base.token_trajectory.gain.norm() > 0
-    print('Student pre-BN KD reaches visual/gain, excludes BN/classifier/P0/teacher, one BN and one combined update PASS', flush=True)
+    if c.MODEL.TOKEN_TRAJECTORY:
+        assert student.base.token_trajectory.gain.norm() > 0
+    else:
+        assert student.base.token_trajectory is None
+    print('Student pre-BN KD reaches enabled visual parameters, excludes BN/classifier/P0/teacher, one BN and one combined update PASS', flush=True)
     if export_dir:
         out = Path(export_dir)
         out.mkdir(parents=True, exist_ok=True)
+        student_c0 = c.MODEL.TOKEN_TRAJECTORY
         c.M2.TRAIN_STAGE = 'teacher'
         c.MODEL.TOKEN_TRAJECTORY = False
         attach_metadata(teacher, c, bank)
@@ -184,7 +190,7 @@ def check(cfg, device='cpu', export_dir=None):
         restored = restore_training(str(out/'conditional_teacher_epoch1.pth'), teacher, opt, scheduler, scaler)
         assert restored[:4] == (2, 2, 2, 0)
         torch.testing.assert_close(teacher.bottleneck.weight, original_bn)
-        c.M2.TRAIN_STAGE = 'student'; c.MODEL.TOKEN_TRAJECTORY = True
+        c.M2.TRAIN_STAGE = 'student'; c.MODEL.TOKEN_TRAJECTORY = student_c0
         c.M2.TEACHER_WEIGHT = str(out/'conditional_teacher_epoch1.pth')
         loaded, obj = load_teacher(c, classes, device)
         with torch.no_grad():
@@ -203,14 +209,19 @@ def check(cfg, device='cpu', export_dir=None):
             for neck in ('before', 'after'):
                 student.neck_feat = deployment.neck_feat = neck
                 torch.testing.assert_close(student(joined, mode=1), deployment(joined, mode=1), rtol=0, atol=0)
-        deployment.trajectory_accel_mix = 1.
+        if student_c0:
+            deployment.trajectory_accel_mix = 1.
+        else:
+            del deployment
+            off.MODEL.TOKEN_TRAJECTORY = True
+            deployment = make_model(off, classes, 7, 0).to(device)
         try:
             deployment.load_param(str(out/'transformer_1_student.pth'))
         except ValueError:
             pass
         else:
-            raise AssertionError('accepted wrong C0 acceleration')
-        print('Teacher/student full-state restore, strict frozen teacher load, teacher-free pre/post-BN export and scalar mismatch rejection PASS', flush=True)
+            raise AssertionError('accepted wrong student backbone/settings')
+        print('Teacher/student full-state restore, strict frozen teacher load, teacher-free pre/post-BN export and student mismatch rejection PASS', flush=True)
 
 def main():
     p = argparse.ArgumentParser()

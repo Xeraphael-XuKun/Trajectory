@@ -57,9 +57,11 @@ def validate_config(c):
         raise ValueError('M2-5 modality/platform mapping differs')
     if c.M2.TRAIN_STAGE not in ('student', 'teacher'):
         raise ValueError('unknown M2-5 training stage')
-    if c.M2.TRAIN_STAGE == 'student' and (not c.MODEL.TOKEN_TRAJECTORY or
+    # M2-5 distils final features and also applies to the original baseline.
+    # When C0 is enabled, keep the historical velocity-only dense contract.
+    if c.M2.TRAIN_STAGE == 'student' and c.MODEL.TOKEN_TRAJECTORY and (
         c.MODEL.TOKEN_TRAJECTORY_VARIANT != 'dense' or c.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX != 0.):
-        raise ValueError('M2-5 first student launch requires original velocity-only dense C0')
+        raise ValueError('M2-5 C0 student requires original velocity-only dense C0')
     if (c.TEACHER_STAGE.USE_C0 or not c.TEACHER_STAGE.FREEZE_PRETRAINED_BACKBONE or
         list(c.TEACHER_STAGE.LORA_TARGETS) != ['q', 'v'] or
         c.TEACHER_STAGE.MODALITY_BANKS != 3 or c.TEACHER_STAGE.PLATFORM_BANKS != 2 or
