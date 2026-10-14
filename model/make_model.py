@@ -187,6 +187,11 @@ class build_transformer(nn.Module):
             validate_config(cfg)
             self.base.clip_proj.requires_grad_(False)
 
+        if cfg.M2_DIRECT_TEXT.ENABLED:
+            from utils.direct_text import validate_config
+            validate_config(cfg)
+            self.base.clip_proj.requires_grad_(False)
+
         self.num_classes = num_classes
 
         from loss.make_loss import ce_modality_groups, ce_slot_count

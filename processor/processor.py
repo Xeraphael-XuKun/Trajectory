@@ -475,6 +475,21 @@ def do_train(cfg,
         if cfg.M2.RESUME:
             start_epoch, m5_iterations, m5_updates, m5_amp_skips, m5_elapsed = restore_training(
                 cfg.M2.RESUME, model_meta, optimizer, scheduler, scaler)
+    dt_active = bool(cfg.M2_DIRECT_TEXT.ENABLED)
+    dt_text = None
+    dt_iterations = dt_updates = dt_skips = 0
+    dt_elapsed = 0.
+    if dt_active:
+        from utils.direct_text import start, text_ce, restore, write_json
+        dt_text = start(cfg, model_meta, train_loader.dataset.dataset, logger)
+        write_json(os.path.join(cfg.OUTPUT_DIR, 'optimizer_groups.json'), [dict(
+            parameters=[name for name,p in model_meta.named_parameters() if any(p is q for q in group['params'])],
+            lr=group['lr'], weight_decay=group['weight_decay']) for group in optimizer.param_groups])
+        if cfg.M2_DIRECT_TEXT.RESUME:
+            saved = restore(cfg, model_meta, optimizer, scheduler, scaler)
+            start_epoch = saved['epoch'] + 1
+            dt_iterations, dt_updates, dt_skips = saved['actual_iterations'], saved['optimizer_updates'], saved['amp_skips']
+            dt_elapsed = saved['stage_seconds']
     m5_wall_start = time.time()
     feat_dim = getattr(model_meta, 'in_planes', 768)
     num_classes = getattr(model_meta, 'num_classes', 500)
@@ -544,6 +559,10 @@ def do_train(cfg,
                         ce_split_view, ce_split_mod, ce_groups)
                 loss, il, tl = loss_fn(cls_score, global_feat, target_rep,
                                        target_ce=target_ce)
+                if dt_active:
+                    dt_loss, dt_logits = text_ce(global_feat, model_meta.base.clip_proj, dt_text,
+                        target_rep, cfg.M2_DIRECT_TEXT.TEMPERATURE)
+                    loss = loss + cfg.M2_DIRECT_TEXT.WEIGHT * dt_loss
                 if m2_enabled:
                     if m2_stage == 'teacher':
                         ls = normalized_clip_logits(global_feat, model_meta.base.clip_proj,
@@ -661,10 +680,34 @@ def do_train(cfg,
                 scaler.scale(total_loss).backward()
                 display_loss = total_loss.detach()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            dt_gain_norm = None
+            if dt_active and (n_iter + 1) % log_period == 0:
+                grad = model_meta.base.token_trajectory.gain.grad
+                dt_gain_norm = grad.detach().double().norm().item() if grad is not None else None
+            dt_global_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
+            if dt_active:
+                dt_iterations += 1
+                skipped = scaler.get_scale() < scale_before
+                dt_skips += int(skipped)
+                dt_updates += int(not skipped)
+                if (n_iter + 1) % log_period == 0:
+                    import json, math
+                    with torch.no_grad(), amp.autocast(enabled=False):
+                        logp = dt_logits.detach().float().log_softmax(-1)
+                        record = dict(epoch=epoch, iteration=n_iter+1, iterations=dt_iterations,
+                            updates=dt_updates, AMP_skips=dt_skips, batch_size=len(target_rep),
+                            CE=il.item(), Triplet=tl.item(), text_CE=dt_loss.item(),
+                            weighted_text_CE=(cfg.M2_DIRECT_TEXT.WEIGHT*dt_loss).item(),
+                            text_accuracy=(dt_logits.argmax(-1)==target_rep).float().mean().item(),
+                            true_id_probability=logp.gather(1,target_rep[:,None]).exp().mean().item(),
+                            text_entropy=-(logp.exp()*logp).sum(-1).mean().item(),
+                            global_norm_before_clip=dt_global_norm.item() if torch.isfinite(dt_global_norm) else None,
+                            gain_gradient_before_clip=dt_gain_norm if dt_gain_norm is not None and math.isfinite(dt_gain_norm) else None,
+                            gradients_finite=bool(torch.isfinite(dt_global_norm)), teacher_updates=0, prompt_updates=0)
+                    logger.info('M2-5-DT %s', json.dumps(record,sort_keys=True))
             if m2_enabled:
                 m5_iterations += 1
                 if scaler.get_scale() >= scale_before:
@@ -863,7 +906,7 @@ def do_train(cfg,
                 )
             )
 
-        if not m2_enabled and epoch % checkpoint_period == 0:
+        if not m2_enabled and not dt_active and epoch % checkpoint_period == 0:
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
                     torch.save(model.state_dict(), os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
@@ -904,6 +947,11 @@ def do_train(cfg,
                     logger.info(f'CMC curve, Rank-{r:<2}: {cmc[r-1]:.2%}')
             torch.cuda.empty_cache()
 
+        if dt_active and (epoch % checkpoint_period == 0 or epoch == epochs):
+            from utils.direct_text import save_training
+            save_training(cfg, epoch, model_meta, optimizer, scheduler, scaler,
+                dt_iterations, dt_updates, dt_skips, dt_elapsed + time.time() - m5_wall_start,
+                torch.cuda.max_memory_allocated())
         if m2_enabled and (epoch % checkpoint_period == 0 or epoch == epochs):
             from utils.m5_checkpoint import save_training
             payload = save_training(cfg.OUTPUT_DIR, cfg.MODEL.NAME, epoch, model_meta,
