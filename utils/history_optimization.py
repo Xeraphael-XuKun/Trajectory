@@ -60,6 +60,9 @@ class HistoryOptimizationMonitor:
                 effective = [self.adapter.alpha * (p.tanh() if self.adapter.gain_mode == 'tanh' else p)
                              for p in ps]
                 values['effective_rms'] = tensor_norm(effective) / math.sqrt(count)
+            if family in ('velocity_gain', 'innovation_gain'):
+                coefficient = self.adapter.alpha if family == 'innovation_gain' else 1.0
+                values['effective_rms'] = coefficient * values['rms']
             values['weight_decay'] = sorted(set(self.groups[id(p)]['weight_decay'] for p in ps))
             values['learning_rates'] = sorted(set(self.groups[id(p)]['lr'] for p in ps))
             result[family] = values

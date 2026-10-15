@@ -1,6 +1,7 @@
 import logging
 import json
 from loss.history_prediction import history_prediction_loss, history_diagnostics
+from utils.history_training import history_gradient_groups, clip_history_gradients
 from utils.history_optimization import HistoryOptimizationMonitor, diagnostic_stop_epoch, number
 import os
 import time
@@ -466,6 +467,8 @@ def do_train(cfg,
         )
 
     history_enabled = bool(cfg.HISTORY.ENABLED)
+    history_p3 = history_enabled and cfg.HISTORY.METHOD == 'p3'
+    history_clip_groups = history_gradient_groups(model) if history_p3 else None
     history_meter = AverageMeter()
     history_stop = diagnostic_stop_epoch(cfg)
     history_grad_period = cfg.HISTORY.GRAD_DIAG_PERIOD if history_enabled else 0
@@ -663,7 +666,13 @@ def do_train(cfg,
             scaler.unscale_(optimizer)
             if history_gradient_record is not None:
                 history_gradient_record['data_grad_preclip_norm'] = history_monitor.before_clip()
-            total_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if history_p3:
+                clip_norms = clip_history_gradients(history_clip_groups, max_norm=1.0)
+                total_grad_norm = torch.linalg.vector_norm(torch.stack(list(clip_norms.values())))
+                if history_gradient_record is not None:
+                    history_gradient_record['separate_grad_preclip_norm'] = {k: number(v) for k, v in clip_norms.items()}
+            else:
+                total_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             if history_gradient_record is not None:
                 history_gradient_record['global_grad_preclip_norm'] = number(total_grad_norm)
                 history_gradient_record.update(history_monitor.after_clip())
@@ -857,10 +866,17 @@ def do_train(cfg,
                       'weighted_prediction_loss': cfg.HISTORY.LOSS_WEIGHT * history_meter.avg,
                       'ce': meter_ls[0].avg, 'triplet': meter_ls[1].avg,
                       'diagnostic_batches': history_sample_count, 'amp_skipped_steps': history_skipped,
-                      'gain_rms': model_meta.base.history_adapter.gain.detach().float().square().mean().sqrt().item(),
+                      'gain_rms': (model_meta.base.history_adapter.velocity_gain if history_p3 else model_meta.base.history_adapter.gain).detach().float().square().mean().sqrt().item(),
                       'token_scope': cfg.HISTORY.TOKEN_SCOPE, 'gain_mode': cfg.HISTORY.GAIN_MODE,
+                      'method': cfg.HISTORY.METHOD,
+                      'gradient_clipping': 'task_prediction_separate_1' if history_p3 else 'global_1',
                       'gain_distribution': model_meta.base.history_adapter.gain_diagnostics(),
                       'layers': layer_stats}
+            if history_p3:
+                record['gain_rms_scope'] = 'velocity_all_tokens'
+                record['innovation_gain_rms'] = model_meta.base.history_adapter.innovation_gain.detach().float().square().mean().sqrt().item()
+                record['innovation_token_scope'] = 'patch'
+                record['prediction_layers'] = sorted(model_meta.base.history_adapter.prediction_layers)
             if history_monitor is not None:
                 record['optimization'] = {'alpha': cfg.HISTORY.ALPHA,
                                           'parameters': history_monitor.parameter_summary()}
