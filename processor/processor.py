@@ -475,6 +475,10 @@ def do_train(cfg,
         if cfg.M2.RESUME:
             start_epoch, m5_iterations, m5_updates, m5_amp_skips, m5_elapsed = restore_training(
                 cfg.M2.RESUME, model_meta, optimizer, scheduler, scaler)
+    history_monitor = None
+    if cfg.HISTORY.ENABLED:
+        from utils.hi3_m2e import HistoryEpochMonitor
+        history_monitor = HistoryEpochMonitor(cfg, model_meta.base.history_adapter)
     m5_wall_start = time.time()
     feat_dim = getattr(model_meta, 'in_planes', 768)
     num_classes = getattr(model_meta, 'num_classes', 500)
@@ -493,6 +497,8 @@ def do_train(cfg,
 
     for epoch in range(start_epoch, epochs + 1):
         start_time = time.time()
+        if history_monitor is not None:
+            history_monitor.reset()
         loss_meter.reset()
         acc_meter.reset()
         for m in meter_ls:
@@ -533,7 +539,11 @@ def do_train(cfg,
             target_rep = target.repeat(num_modalities)
 
             with amp.autocast(enabled=True):
-                out = model(imgs, target, camids)
+                if history_monitor is not None:
+                    history_sample = n_iter == 0 or (n_iter + 1) % log_period == 0
+                    out = model(imgs, target, camids, history_diagnostics=history_sample)
+                else:
+                    out = model(imgs, target, camids)
                 aux = out[3] if len(out) > 3 else None
                 cls_score, global_feat, feat = out[0], out[1], out[2]
 
@@ -544,6 +554,10 @@ def do_train(cfg,
                         ce_split_view, ce_split_mod, ce_groups)
                 loss, il, tl = loss_fn(cls_score, global_feat, target_rep,
                                        target_ce=target_ce)
+                if history_monitor is not None:
+                    from loss.history_prediction import history_prediction_loss
+                    prediction_loss = history_prediction_loss(aux)
+                    loss = loss + cfg.HISTORY.LOSS_WEIGHT * prediction_loss
                 if m2_enabled:
                     if m2_stage == 'teacher':
                         ls = normalized_clip_logits(global_feat, model_meta.base.clip_proj,
@@ -564,6 +578,10 @@ def do_train(cfg,
                             m2_text, cfg.M2.TEXT_TEMPERATURE)
                         m5_aux = kd_kl(lt, ls, m2_tau)
                         loss = loss + m2_weight * m5_aux
+                if history_monitor is not None:
+                    history_monitor.observe(aux, il, tl, prediction_loss,
+                                            m5_aux if m2_enabled else loss.new_zeros(()),
+                                            len(target_rep), history_sample)
                 vpr_aux_total = loss.new_zeros(())
 
                 if aux is not None and aux.get('kind') == 'vpr':
@@ -581,7 +599,7 @@ def do_train(cfg,
                         meter_vpr_csd.update(raw_vpr_csd.item(),
                                              max(1, last_vpr_csd_stats['n_valid']))
 
-                if (aux is not None and aux.get('kind') != 'vpr'
+                if (aux is not None and aux.get('kind') not in ('vpr', 'history')
                         and text_weight > 0):
                     if aux.get('target') == 'modality':
                         loss_text, text_stats = modality_align(aux)
@@ -665,13 +683,13 @@ def do_train(cfg,
             scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
-            if m2_enabled:
+            if m2_enabled or history_monitor is not None:
                 m5_iterations += 1
                 if scaler.get_scale() >= scale_before:
                     m5_updates += 1
                 else:
                     m5_amp_skips += 1
-                if (n_iter + 1) % log_period == 0:
+                if m2_enabled and (n_iter + 1) % log_period == 0:
                     with amp.autocast(enabled=False), torch.no_grad():
                         def entropy(logits, temperature=1.):
                             logp = (logits.float() / temperature).log_softmax(-1)
@@ -847,6 +865,8 @@ def do_train(cfg,
                     stats_str = ', '.join(f'{k}={v:.4f}' for k, v in chart_stats.items())
                     logger.info(f'Epoch[{epoch}] Chart: {stats_str}')
 
+        if history_monitor is not None:
+            history_monitor.finish(epoch, n_iter + 1, m5_iterations, m5_updates, m5_amp_skips, logger)
         end_time = time.time()
         time_per_batch = (end_time - start_time) / (n_iter + 1)
         if cfg.MODEL.DIST_TRAIN:

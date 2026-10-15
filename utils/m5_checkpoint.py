@@ -23,14 +23,24 @@ def architecture(c):
         'stride': list(c.MODEL.STRIDE_SIZE), 'drop_path': c.MODEL.DROP_PATH,
         'text_temperature': c.TEACHER_STAGE.TEMPERATURE, 'text_weight': c.TEACHER_STAGE.TEXT_ID_WEIGHT}
 
+def student_signature(model):
+    adapter = getattr(model.base, 'history_adapter', None)
+    if adapter is not None:
+        return {'kind': 'history', 'specification': adapter.specification.cpu().tolist(),
+                'token_scope': adapter.token_scope, 'gain_mode': adapter.gain_mode}
+    if getattr(model, 'use_token_trajectory', False):
+        return {'trajectory_variant': model.base.token_trajectory_variant,
+                'acceleration_mix': model.trajectory_accel_mix,
+                'gain_shape': list(model.base.token_trajectory.gain.shape)}
+    return None
+
+
 def attach_metadata(model, c, bank, teacher=None):
     model.m5_metadata = {'variant': c.M2.VARIANT, 'implementation': VERSION,
         'base_commit': BASE_COMMIT, 'stage': c.M2.TRAIN_STAGE, 'config': c.dump(),
         'source': bank['metadata']['source'], 'text_metadata': bank['metadata'],
         'text_sha256': file_digest(c.M2.TEXT_BANK), 'teacher_architecture': architecture(c),
-        'student': {'trajectory_variant': c.MODEL.TOKEN_TRAJECTORY_VARIANT,
-            'acceleration_mix': c.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX,
-            'gain_shape': list(model.base.token_trajectory.gain.shape)} if c.M2.TRAIN_STAGE == 'student' else None}
+        'student': student_signature(model) if c.M2.TRAIN_STAGE == 'student' else None}
     if teacher is not None:
         model.m5_metadata['teacher_sha256'] = file_digest(c.M2.TEACHER_WEIGHT)
         model.m5_metadata['teacher_metadata'] = teacher['metadata']

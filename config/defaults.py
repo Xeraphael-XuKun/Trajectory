@@ -603,3 +603,18 @@ _C.TEACHER_STAGE.MODALITY_BANKS = 3
 _C.TEACHER_STAGE.PLATFORM_BANKS = 2
 _C.TEACHER_STAGE.TEXT_ID_WEIGHT = 0.5
 _C.TEACHER_STAGE.TEMPERATURE = 0.07
+
+# Optional historical adapter; defaults preserve original M2-e.
+_C.HISTORY = CN()
+_C.HISTORY.ENABLED = False
+_C.HISTORY.RANK = 64
+_C.HISTORY.ALPHA = 0.25
+_C.HISTORY.TOKEN_SCOPE = 'patch'  # patch | all (CLS + patches)
+_C.HISTORY.GAIN_MODE = 'tanh'    # tanh | linear; both retain ALPHA
+_C.HISTORY.PREDICTION_LAYERS = list(range(2, 13))
+_C.HISTORY.LOSS_WEIGHT = 1.0
+_C.HISTORY.INIT_SEED = 1235
+# -1沿用原优化器衰减；0仅关闭gain/Anchor/Corrector（含bias）的衰减。
+_C.HISTORY.WRITE_WEIGHT_DECAY = -1.0
+_C.HISTORY.STOP_AFTER_EPOCH = 0  # 0跑满MAX_EPOCHS；不改变学习率日程
+_C.HISTORY.GRAD_DIAG_PERIOD = 0  # 0关闭新增诊断；正数=每epoch首步及每N步

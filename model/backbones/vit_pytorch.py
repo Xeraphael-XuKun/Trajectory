@@ -407,6 +407,7 @@ class TransReID(nn.Module):
         # by preceding blocks, then learn a dense per-token/per-channel gain.
         # No static feature offset exists and the zero gain preserves the
         # pretrained function exactly at step zero.
+        self.history_adapter = None
         self.token_trajectory = (
             DenseCrossLayerTokenTrajectory(
                 depth=depth, num_tokens=num_patches + 1,
@@ -608,7 +609,8 @@ class TransReID(nn.Module):
 
     def forward_features(self, x, camera_id, modal_id, view_id, delta_gate=None,
                          vpr_gate=None, trajectory_gate=None, conditional_lora=None,
-                         conditional_modality=None, conditional_platform=None):
+                         conditional_modality=None, conditional_platform=None,
+                         history_collect=False, history_diagnostics=False):
         """delta_gate: None, or [B] / [B,1,1] scaling the layer-wise increments
         per image.  None means "apply them everywhere", which is what every run
         before the text-alignment work did and must stay bit-identical."""
@@ -673,6 +675,7 @@ class TransReID(nn.Module):
             mod_idx = (modal_id - 1).clamp_min(0)
             mod_keep = (modal_id > 0).to(x.dtype).reshape(-1, 1, 1)
 
+        history, previous_r, history_records = [], None, {}
         previous_velocity = None
         previous_previous_velocity = None
         for i, blk in enumerate(self.blocks):
@@ -690,6 +693,12 @@ class TransReID(nn.Module):
                 x = x + self.token_trajectory(
                     i, previous_velocity, previous_previous_velocity,
                     gate=trajectory_gate)
+            if self.history_adapter is not None:
+                r, history, previous_r, item = self.history_adapter.correction(
+                    x, i, history, previous_r, history_collect, history_diagnostics)
+                x = x + r
+                if history_collect:
+                    history_records[i + 1] = item
             block_input = x
             qkv_delta = None
             if conditional_lora is not None:
@@ -709,18 +718,22 @@ class TransReID(nn.Module):
 
         x = self.norm(x)
 
+        if self.history_adapter is not None and history_collect:
+            return x[:, 0], {'kind': 'history', 'layers': history_records,
+                             'prediction_layers': sorted(self.history_adapter.prediction_layers)}
         return x[:, 0]
 
     def forward(self, x, cam_label=None, modal_label=None, view_label=None,
                 delta_gate=None, vpr_gate=None, trajectory_gate=None,
                 conditional_lora=None, conditional_modality=None,
-                conditional_platform=None):
+                conditional_platform=None, history_collect=False, history_diagnostics=False):
         x = self.forward_features(x, cam_label, modal_label, view_label,
                                   delta_gate=delta_gate, vpr_gate=vpr_gate,
                                   trajectory_gate=trajectory_gate,
                                   conditional_lora=conditional_lora,
                                   conditional_modality=conditional_modality,
-                                  conditional_platform=conditional_platform)
+                                  conditional_platform=conditional_platform,
+                                  history_collect=history_collect, history_diagnostics=history_diagnostics)
         return x
 
     def _load_rope_freqs(self, freqs):

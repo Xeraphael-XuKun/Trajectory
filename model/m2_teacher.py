@@ -34,6 +34,7 @@ class ConditionalVisualTeacher(nn.Module):
         c = cfg.clone()
         c.defrost()
         c.M2.ENABLED = False
+        c.HISTORY.ENABLED = False
         c.MODEL.TOKEN_TRAJECTORY = False
         c.MODEL.PRETRAIN_CHOICE = 'imagenet' if load_original else 'no'
         c.MODEL.PRETRAIN_PATH = cfg.M2.CLIP_PATH
