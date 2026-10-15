@@ -83,6 +83,10 @@ class build_transformer(nn.Module):
         self.use_token_trajectory = bool(cfg.MODEL.TOKEN_TRAJECTORY)
         self.use_history = bool(cfg.HISTORY.ENABLED)
         if self.use_history:
+            if cfg.HISTORY.METHOD not in ('legacy', 'p1'):
+                raise ValueError('Unknown HISTORY.METHOD')
+            if cfg.HISTORY.METHOD == 'p1' and (cfg.HISTORY.TOKEN_SCOPE != 'patch' or cfg.HISTORY.GAIN_MODE != 'linear'):
+                raise ValueError('P1 requires patch-only linear gain')
             if (self.use_token_trajectory or self.use_vpr or self.use_mod_delta
                     or cfg.MODEL.TEXT_ALIGN or cfg.MODEL.PE_LAYERWISE != 'none'
                     or cfg.MODEL.PE_TYPE != 'learnable' or cfg.MODEL.PE_FREEZE_BASE
@@ -183,11 +187,19 @@ class build_transformer(nn.Module):
             from .backbones.history_adapter import HistoryInnovationAdapter
             with torch.random.fork_rng(devices=[]):
                 torch.random.default_generator.manual_seed(cfg.HISTORY.INIT_SEED)
-                self.base.history_adapter = HistoryInnovationAdapter(
-                    self.base.embed_dim, len(self.base.blocks),
-                    self.base.patch_embed.num_patches, cfg.HISTORY.RANK,
-                    cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS,
-                    token_scope=cfg.HISTORY.TOKEN_SCOPE, gain_mode=cfg.HISTORY.GAIN_MODE)
+                if cfg.HISTORY.METHOD == 'p1':
+                    from .backbones.history_p1 import HistoryP1Adapter
+                    self.base.history_adapter = HistoryP1Adapter(
+                        self.base.embed_dim, len(self.base.blocks),
+                        self.base.patch_embed.num_patches, cfg.HISTORY.RANK,
+                        cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS)
+                else:
+                    self.base.history_adapter = HistoryInnovationAdapter(
+                        self.base.embed_dim, len(self.base.blocks),
+                        self.base.patch_embed.num_patches, cfg.HISTORY.RANK,
+                        cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS,
+                        token_scope=cfg.HISTORY.TOKEN_SCOPE, gain_mode=cfg.HISTORY.GAIN_MODE)
+            print('History method: {}'.format(cfg.HISTORY.METHOD))
             print('History innovation: scope={}, gain={}, rank={}, alpha={}, prediction layers={}, params={:,}'.format(
                 cfg.HISTORY.TOKEN_SCOPE, cfg.HISTORY.GAIN_MODE,
                 cfg.HISTORY.RANK, cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS,

@@ -1,6 +1,7 @@
 import logging
 import json
 from loss.history_prediction import history_prediction_loss, history_diagnostics
+from utils.history_training import history_gradient_groups, clip_history_gradients
 from utils.history_optimization import HistoryOptimizationMonitor, diagnostic_stop_epoch, number
 import os
 import time
@@ -466,6 +467,8 @@ def do_train(cfg,
         )
 
     history_enabled = bool(cfg.HISTORY.ENABLED)
+    history_p1 = history_enabled and cfg.HISTORY.METHOD == 'p1'
+    history_clip_groups = history_gradient_groups(model) if history_p1 else None
     history_meter = AverageMeter()
     history_stop = diagnostic_stop_epoch(cfg)
     history_grad_period = cfg.HISTORY.GRAD_DIAG_PERIOD if history_enabled else 0
@@ -663,7 +666,13 @@ def do_train(cfg,
             scaler.unscale_(optimizer)
             if history_gradient_record is not None:
                 history_gradient_record['data_grad_preclip_norm'] = history_monitor.before_clip()
-            total_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if history_p1:
+                clip_norms = clip_history_gradients(history_clip_groups, max_norm=1.0)
+                total_grad_norm = torch.linalg.vector_norm(torch.stack(list(clip_norms.values())))
+                if history_gradient_record is not None:
+                    history_gradient_record['separate_grad_preclip_norm'] = {k: number(v) for k, v in clip_norms.items()}
+            else:
+                total_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             if history_gradient_record is not None:
                 history_gradient_record['global_grad_preclip_norm'] = number(total_grad_norm)
                 history_gradient_record.update(history_monitor.after_clip())
@@ -859,6 +868,8 @@ def do_train(cfg,
                       'diagnostic_batches': history_sample_count, 'amp_skipped_steps': history_skipped,
                       'gain_rms': model_meta.base.history_adapter.gain.detach().float().square().mean().sqrt().item(),
                       'token_scope': cfg.HISTORY.TOKEN_SCOPE, 'gain_mode': cfg.HISTORY.GAIN_MODE,
+                      'method': cfg.HISTORY.METHOD,
+                      'gradient_clipping': 'task_prediction_separate_1' if history_p1 else 'global_1',
                       'gain_distribution': model_meta.base.history_adapter.gain_diagnostics(),
                       'layers': layer_stats}
             if history_monitor is not None:
