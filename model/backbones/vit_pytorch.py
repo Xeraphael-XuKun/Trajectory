@@ -650,6 +650,7 @@ class TransReID(nn.Module):
             mod_keep = (modal_id > 0).to(x.dtype).reshape(-1, 1, 1)
 
         history, previous_r, history_records = [], None, {}
+        history_velocity = self.history_adapter is not None and getattr(self.history_adapter, 'uses_velocity', False)
         previous_velocity = None
         previous_previous_velocity = None
         for i, blk in enumerate(self.blocks):
@@ -668,14 +669,19 @@ class TransReID(nn.Module):
                     i, previous_velocity, previous_previous_velocity,
                     gate=trajectory_gate)
             if self.history_adapter is not None:
-                r, history, previous_r, item = self.history_adapter.correction(
-                    x, i, history, previous_r, history_collect, history_diagnostics)
+                if history_velocity:
+                    r, history, previous_r, item = self.history_adapter.correction(
+                        x, i, history, previous_r, history_collect, history_diagnostics,
+                        previous_velocity=previous_velocity)
+                else:
+                    r, history, previous_r, item = self.history_adapter.correction(
+                        x, i, history, previous_r, history_collect, history_diagnostics)
                 x = x + r
                 if history_collect:
                     history_records[i + 1] = item
             block_input = x
             x = blk(x, chart=chart)
-            if self.token_trajectory is not None:
+            if self.token_trajectory is not None or history_velocity:
                 current_velocity = x - block_input
                 previous_previous_velocity = previous_velocity
                 previous_velocity = current_velocity

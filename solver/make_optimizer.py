@@ -89,6 +89,11 @@ def make_optimizer(cfg, model, center_criterion):
                     'gain', 'cls_gain', 'anchors', 'correctors'):
                 weight_decay = cfg.HISTORY.WRITE_WEIGHT_DECAY
 
+        if cfg.HISTORY.ENABLED and cfg.HISTORY.METHOD == 'p4' and key.startswith('base.history_adapter.'):
+            family = key[len('base.history_adapter.'):].split('.')[0]
+            lr = cfg.SOLVER.BASE_LR
+            weight_decay = cfg.SOLVER.WEIGHT_DECAY if family == 'velocity_gain' else 0.0
+
         params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
 
     if cfg.SOLVER.OPTIMIZER_NAME == 'SGD':

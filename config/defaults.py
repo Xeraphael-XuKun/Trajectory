@@ -202,6 +202,8 @@ _C.MODEL.TOKEN_TRAJECTORY_ACCEL_MIX = 1.0
 # Independent historical-innovation study. All old experiments default off.
 _C.HISTORY = CN()
 _C.HISTORY.ENABLED = False
+_C.HISTORY.METHOD = 'legacy'  # legacy | p4
+_C.HISTORY.GATE_ETA = 0.5
 _C.HISTORY.RANK = 64
 _C.HISTORY.ALPHA = 0.25
 _C.HISTORY.TOKEN_SCOPE = 'patch'  # patch | all (CLS + patches)

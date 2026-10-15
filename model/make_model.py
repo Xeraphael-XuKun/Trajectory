@@ -83,6 +83,10 @@ class build_transformer(nn.Module):
         self.use_token_trajectory = bool(cfg.MODEL.TOKEN_TRAJECTORY)
         self.use_history = bool(cfg.HISTORY.ENABLED)
         if self.use_history:
+            if cfg.HISTORY.METHOD not in ('legacy', 'p4'):
+                raise ValueError('Unknown HISTORY.METHOD')
+            if cfg.HISTORY.METHOD == 'p4' and (cfg.HISTORY.TOKEN_SCOPE != 'all' or cfg.HISTORY.GAIN_MODE != 'linear' or cfg.HISTORY.ALPHA != 1.0):
+                raise ValueError('P4 requires full-token linear C0 gain with coefficient 1')
             if (self.use_token_trajectory or self.use_vpr or self.use_mod_delta
                     or cfg.MODEL.TEXT_ALIGN or cfg.MODEL.PE_LAYERWISE != 'none'
                     or cfg.MODEL.PE_TYPE != 'learnable' or cfg.MODEL.PE_FREEZE_BASE
@@ -183,15 +187,27 @@ class build_transformer(nn.Module):
             from .backbones.history_adapter import HistoryInnovationAdapter
             with torch.random.fork_rng(devices=[]):
                 torch.random.default_generator.manual_seed(cfg.HISTORY.INIT_SEED)
-                self.base.history_adapter = HistoryInnovationAdapter(
-                    self.base.embed_dim, len(self.base.blocks),
-                    self.base.patch_embed.num_patches, cfg.HISTORY.RANK,
-                    cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS,
-                    token_scope=cfg.HISTORY.TOKEN_SCOPE, gain_mode=cfg.HISTORY.GAIN_MODE)
-            print('History innovation: scope={}, gain={}, rank={}, alpha={}, prediction layers={}, params={:,}'.format(
-                cfg.HISTORY.TOKEN_SCOPE, cfg.HISTORY.GAIN_MODE,
-                cfg.HISTORY.RANK, cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS,
-                sum(p.numel() for p in self.base.history_adapter.parameters())))
+                if cfg.HISTORY.METHOD == 'p4':
+                    from .backbones.history_p4 import HistoryP4Adapter
+                    self.base.history_adapter = HistoryP4Adapter(
+                        self.base.embed_dim, len(self.base.blocks),
+                        self.base.patch_embed.num_patches, cfg.HISTORY.GATE_ETA,
+                        cfg.HISTORY.PREDICTION_LAYERS)
+                else:
+                    self.base.history_adapter = HistoryInnovationAdapter(
+                        self.base.embed_dim, len(self.base.blocks),
+                        self.base.patch_embed.num_patches, cfg.HISTORY.RANK,
+                        cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS,
+                        token_scope=cfg.HISTORY.TOKEN_SCOPE, gain_mode=cfg.HISTORY.GAIN_MODE)
+            print('History method: {}'.format(cfg.HISTORY.METHOD))
+            if cfg.HISTORY.METHOD == 'p4':
+                print('P4 C0: blocks 2-12/all tokens/coefficient 1; patch gate: blocks 3-12/eta {}; learned history: blocks 4-12; params {:,}'.format(
+                    cfg.HISTORY.GATE_ETA, sum(p.numel() for p in self.base.history_adapter.parameters())))
+            else:
+                print('History innovation: scope={}, gain={}, rank={}, alpha={}, prediction layers={}, params={:,}'.format(
+                    cfg.HISTORY.TOKEN_SCOPE, cfg.HISTORY.GAIN_MODE,
+                    cfg.HISTORY.RANK, cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS,
+                    sum(p.numel() for p in self.base.history_adapter.parameters())))
 
         self.num_classes = num_classes
 
