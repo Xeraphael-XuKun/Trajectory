@@ -83,9 +83,9 @@ class build_transformer(nn.Module):
         self.use_token_trajectory = bool(cfg.MODEL.TOKEN_TRAJECTORY)
         self.use_history = bool(cfg.HISTORY.ENABLED)
         if self.use_history:
-            if cfg.HISTORY.METHOD not in ('legacy', 'p3'):
+            if cfg.HISTORY.METHOD not in ('legacy', 'p3', 'p3_b'):
                 raise ValueError('Unknown HISTORY.METHOD')
-            if cfg.HISTORY.METHOD == 'p3' and (cfg.HISTORY.TOKEN_SCOPE != 'all' or cfg.HISTORY.GAIN_MODE != 'linear'):
+            if cfg.HISTORY.METHOD in ('p3', 'p3_b') and (cfg.HISTORY.TOKEN_SCOPE != 'all' or cfg.HISTORY.GAIN_MODE != 'linear'):
                 raise ValueError('P3 requires full-token velocity and linear gains')
             if (self.use_token_trajectory or self.use_vpr or self.use_mod_delta
                     or cfg.MODEL.TEXT_ALIGN or cfg.MODEL.PE_LAYERWISE != 'none'
@@ -187,9 +187,13 @@ class build_transformer(nn.Module):
             from .backbones.history_adapter import HistoryInnovationAdapter
             with torch.random.fork_rng(devices=[]):
                 torch.random.default_generator.manual_seed(cfg.HISTORY.INIT_SEED)
-                if cfg.HISTORY.METHOD == 'p3':
+                if cfg.HISTORY.METHOD in ('p3', 'p3_b'):
                     from .backbones.history_p3 import HistoryP3Adapter
-                    self.base.history_adapter = HistoryP3Adapter(
+                    adapter_class = HistoryP3Adapter
+                    if cfg.HISTORY.METHOD == 'p3_b':
+                        from .backbones.history_p3_b import HistoryP3BAdapter
+                        adapter_class = HistoryP3BAdapter
+                    self.base.history_adapter = adapter_class(
                         self.base.embed_dim, len(self.base.blocks),
                         self.base.patch_embed.num_patches, cfg.HISTORY.PREDICTOR_HIDDEN_DIM,
                         cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS)
@@ -200,10 +204,12 @@ class build_transformer(nn.Module):
                         cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS,
                         token_scope=cfg.HISTORY.TOKEN_SCOPE, gain_mode=cfg.HISTORY.GAIN_MODE)
             print('History method: {}'.format(cfg.HISTORY.METHOD))
-            if cfg.HISTORY.METHOD == 'p3':
+            if cfg.HISTORY.METHOD in ('p3', 'p3_b'):
                 print('P3 velocity: blocks 2-12/all tokens/coefficient 1; innovation: blocks 3-12/patch/coefficient {}; hidden {}; params {:,}'.format(
                     cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTOR_HIDDEN_DIM,
                     sum(p.numel() for p in self.base.history_adapter.parameters())))
+                if cfg.HISTORY.METHOD == 'p3_b':
+                    print('P3-B innovation normalization: current Z patch variance/detached reference/tau 0.25/epsilon 1e-5/no new parameters')
             else:
                 print('History innovation: scope={}, gain={}, rank={}, alpha={}, prediction layers={}, params={:,}'.format(
                     cfg.HISTORY.TOKEN_SCOPE, cfg.HISTORY.GAIN_MODE,

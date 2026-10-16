@@ -467,7 +467,7 @@ def do_train(cfg,
         )
 
     history_enabled = bool(cfg.HISTORY.ENABLED)
-    history_p3 = history_enabled and cfg.HISTORY.METHOD == 'p3'
+    history_p3 = history_enabled and cfg.HISTORY.METHOD in ('p3', 'p3_b')
     history_clip_groups = history_gradient_groups(model) if history_p3 else None
     history_meter = AverageMeter()
     history_stop = diagnostic_stop_epoch(cfg)
@@ -877,6 +877,11 @@ def do_train(cfg,
                 record['innovation_gain_rms'] = model_meta.base.history_adapter.innovation_gain.detach().float().square().mean().sqrt().item()
                 record['innovation_token_scope'] = 'patch'
                 record['prediction_layers'] = sorted(model_meta.base.history_adapter.prediction_layers)
+            if history_p3 and cfg.HISTORY.METHOD == 'p3_b':
+                record['innovation_normalization'] = {
+                    'type': 'relative_variance', 'tau': model_meta.base.history_adapter.tau,
+                    'epsilon': model_meta.base.history_adapter.epsilon,
+                    'reference': 'current_z_patch_variance_detached'}
             if history_monitor is not None:
                 record['optimization'] = {'alpha': cfg.HISTORY.ALPHA,
                                           'parameters': history_monitor.parameter_summary()}

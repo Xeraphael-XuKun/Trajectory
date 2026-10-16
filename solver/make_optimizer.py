@@ -89,7 +89,7 @@ def make_optimizer(cfg, model, center_criterion):
                     'gain', 'cls_gain', 'anchors', 'correctors'):
                 weight_decay = cfg.HISTORY.WRITE_WEIGHT_DECAY
 
-        if cfg.HISTORY.ENABLED and cfg.HISTORY.METHOD == 'p3' and key.startswith('base.history_adapter.'):
+        if cfg.HISTORY.ENABLED and cfg.HISTORY.METHOD in ('p3', 'p3_b') and key.startswith('base.history_adapter.'):
             family = key[len('base.history_adapter.'):].split('.')[0]
             lr = cfg.HISTORY.NETWORK_LR if family == 'predictors' else cfg.SOLVER.BASE_LR
             weight_decay = 0.0 if family == 'innovation_gain' else cfg.SOLVER.WEIGHT_DECAY
