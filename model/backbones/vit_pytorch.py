@@ -584,7 +584,7 @@ class TransReID(nn.Module):
         return torch.cat([cls_pos.to(dtype=dtype), patch_pos], dim=1)
 
     def forward_features(self, x, camera_id, modal_id, view_id, delta_gate=None,
-                         vpr_gate=None, trajectory_gate=None, history_collect=False, history_diagnostics=False):
+                         vpr_gate=None, trajectory_gate=None, history_collect=False, history_diagnostics=False, history_conditions=None):
         """delta_gate: None, or [B] / [B,1,1] scaling the layer-wise increments
         per image.  None means "apply them everywhere", which is what every run
         before the text-alignment work did and must stay bit-identical."""
@@ -651,6 +651,10 @@ class TransReID(nn.Module):
 
         history, previous_r, history_records = [], None, {}
         history_velocity = self.history_adapter is not None and getattr(self.history_adapter, 'uses_velocity', False)
+        conditioned = getattr(self.history_adapter, 'uses_conditions', False)
+        if conditioned and history_conditions is None:
+            raise ValueError('P3-C backbone requires explicit per-image conditions')
+        history_kwargs = {'conditions': history_conditions} if conditioned else {}
         previous_velocity = None
         previous_previous_velocity = None
         for i, blk in enumerate(self.blocks):
@@ -672,7 +676,7 @@ class TransReID(nn.Module):
                 if history_velocity:
                     r, history, previous_r, item = self.history_adapter.correction(
                         x, i, history, previous_r, history_collect, history_diagnostics,
-                        previous_velocity=previous_velocity)
+                        previous_velocity=previous_velocity, **history_kwargs)
                 else:
                     r, history, previous_r, item = self.history_adapter.correction(
                         x, i, history, previous_r, history_collect, history_diagnostics)
@@ -694,12 +698,12 @@ class TransReID(nn.Module):
         return x[:, 0]
 
     def forward(self, x, cam_label=None, modal_label=None, view_label=None,
-                delta_gate=None, vpr_gate=None, trajectory_gate=None, history_collect=False, history_diagnostics=False):
+                delta_gate=None, vpr_gate=None, trajectory_gate=None, history_collect=False, history_diagnostics=False, history_conditions=None):
         x = self.forward_features(x, cam_label, modal_label, view_label,
                                   delta_gate=delta_gate, vpr_gate=vpr_gate,
                                   trajectory_gate=trajectory_gate,
                                   history_collect=history_collect,
-                                  history_diagnostics=history_diagnostics)
+                                  history_diagnostics=history_diagnostics, history_conditions=history_conditions)
         return x
 
     def _load_rope_freqs(self, freqs):

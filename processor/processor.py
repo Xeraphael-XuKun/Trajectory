@@ -467,7 +467,7 @@ def do_train(cfg,
         )
 
     history_enabled = bool(cfg.HISTORY.ENABLED)
-    history_p3 = history_enabled and cfg.HISTORY.METHOD == 'p3'
+    history_p3 = history_enabled and cfg.HISTORY.METHOD in ('p3', 'p3_c')
     history_clip_groups = history_gradient_groups(model) if history_p3 else None
     history_meter = AverageMeter()
     history_stop = diagnostic_stop_epoch(cfg)
@@ -877,6 +877,13 @@ def do_train(cfg,
                 record['innovation_gain_rms'] = model_meta.base.history_adapter.innovation_gain.detach().float().square().mean().sqrt().item()
                 record['innovation_token_scope'] = 'patch'
                 record['prediction_layers'] = sorted(model_meta.base.history_adapter.prediction_layers)
+            if history_p3 and cfg.HISTORY.METHOD == 'p3_c':
+                adapter = model_meta.base.history_adapter
+                record['conditioning'] = {
+                    'modalities': ['RGB', 'IR', 'Thermal'], 'platforms': ['Aerial', 'Ground'],
+                    'aerial_cams_internal': [5, 6], 'parameters': 1600,
+                    'modal_rms': adapter.modal_condition.detach().float().square().mean().sqrt().item(),
+                    'platform_rms': adapter.platform_condition.detach().float().square().mean().sqrt().item()}
             if history_monitor is not None:
                 record['optimization'] = {'alpha': cfg.HISTORY.ALPHA,
                                           'parameters': history_monitor.parameter_summary()}

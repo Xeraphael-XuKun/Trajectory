@@ -49,6 +49,7 @@ class build_transformer(nn.Module):
         self.neck = cfg.MODEL.NECK
         self.neck_feat = cfg.TEST.NECK_FEAT
         self.in_planes = 768
+        self.history_camera_count = int(camera_num)
 
         print('using Transformer_type: {} as a backbone'.format(cfg.MODEL.TRANSFORMER_TYPE))
         print('using positional encoding: {}{}{}{}{}{}{}{}'.format(
@@ -83,9 +84,9 @@ class build_transformer(nn.Module):
         self.use_token_trajectory = bool(cfg.MODEL.TOKEN_TRAJECTORY)
         self.use_history = bool(cfg.HISTORY.ENABLED)
         if self.use_history:
-            if cfg.HISTORY.METHOD not in ('legacy', 'p3'):
+            if cfg.HISTORY.METHOD not in ('legacy', 'p3', 'p3_c'):
                 raise ValueError('Unknown HISTORY.METHOD')
-            if cfg.HISTORY.METHOD == 'p3' and (cfg.HISTORY.TOKEN_SCOPE != 'all' or cfg.HISTORY.GAIN_MODE != 'linear'):
+            if cfg.HISTORY.METHOD in ('p3', 'p3_c') and (cfg.HISTORY.TOKEN_SCOPE != 'all' or cfg.HISTORY.GAIN_MODE != 'linear'):
                 raise ValueError('P3 requires full-token velocity and linear gains')
             if (self.use_token_trajectory or self.use_vpr or self.use_mod_delta
                     or cfg.MODEL.TEXT_ALIGN or cfg.MODEL.PE_LAYERWISE != 'none'
@@ -100,6 +101,12 @@ class build_transformer(nn.Module):
                 raise ValueError('History study uses single-GPU CLIP ViT-B/16')
             if cfg.HISTORY.LOSS_WEIGHT < 0:
                 raise ValueError('HISTORY.LOSS_WEIGHT must be nonnegative')
+        self.history_conditioned = self.use_history and cfg.HISTORY.METHOD == 'p3_c'
+        if self.history_conditioned:
+            if self.modalities != ['RGB', 'IR', 'Thermal'] or list(cfg.DATASETS.AERIAL_CAMS) != [5, 6]:
+                raise ValueError('P3-C requires RGB/IR/Thermal order and internal AERIAL_CAMS [5, 6]')
+            if self.history_camera_count != 7:
+                raise ValueError('P3-C uses WHU-MARS internal camera IDs 0 through 6')
         self.vpr_view_text = bool(cfg.MODEL.VPR_VIEW_TEXT) and self.use_vpr
         self.vpr_csd = bool(cfg.MODEL.VPR_CSD) and self.use_vpr
         self.vpr_aerial_only = bool(cfg.MODEL.VPR_AERIAL_ONLY)
@@ -187,9 +194,13 @@ class build_transformer(nn.Module):
             from .backbones.history_adapter import HistoryInnovationAdapter
             with torch.random.fork_rng(devices=[]):
                 torch.random.default_generator.manual_seed(cfg.HISTORY.INIT_SEED)
-                if cfg.HISTORY.METHOD == 'p3':
+                if cfg.HISTORY.METHOD in ('p3', 'p3_c'):
                     from .backbones.history_p3 import HistoryP3Adapter
-                    self.base.history_adapter = HistoryP3Adapter(
+                    adapter_class = HistoryP3Adapter
+                    if self.history_conditioned:
+                        from .backbones.history_p3_c import HistoryP3CAdapter
+                        adapter_class = HistoryP3CAdapter
+                    self.base.history_adapter = adapter_class(
                         self.base.embed_dim, len(self.base.blocks),
                         self.base.patch_embed.num_patches, cfg.HISTORY.PREDICTOR_HIDDEN_DIM,
                         cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS)
@@ -200,10 +211,12 @@ class build_transformer(nn.Module):
                         cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTION_LAYERS,
                         token_scope=cfg.HISTORY.TOKEN_SCOPE, gain_mode=cfg.HISTORY.GAIN_MODE)
             print('History method: {}'.format(cfg.HISTORY.METHOD))
-            if cfg.HISTORY.METHOD == 'p3':
+            if cfg.HISTORY.METHOD in ('p3', 'p3_c'):
                 print('P3 velocity: blocks 2-12/all tokens/coefficient 1; innovation: blocks 3-12/patch/coefficient {}; hidden {}; params {:,}'.format(
                     cfg.HISTORY.ALPHA, cfg.HISTORY.PREDICTOR_HIDDEN_DIM,
                     sum(p.numel() for p in self.base.history_adapter.parameters())))
+                if self.history_conditioned:
+                    print('P3-C: RGB/IR/Thermal x Aerial/Ground; cams 5/6 aerial, 0-4 ground; 1600 zero-initialized hidden offsets; prediction-only LR 1e-4 WD 0')
             else:
                 print('History innovation: scope={}, gain={}, rank={}, alpha={}, prediction layers={}, params={:,}'.format(
                     cfg.HISTORY.TOKEN_SCOPE, cfg.HISTORY.GAIN_MODE,
@@ -448,9 +461,44 @@ class build_transformer(nn.Module):
                     else torch.zeros_like(rows))
         return rows, is_aerial, modality
 
+    def _history_conditions(self, images, camids, mode):
+        # Both train and retrieval supply the current image's own metadata.
+        if mode == 0:
+            if (len(images) != 3 or not isinstance(camids, (list, tuple))
+                    or len(camids) != 3):
+                raise ValueError('P3-C training requires three aligned modality/camera batches')
+            device = images[0].device
+            counts = [len(image) for image in images]
+            if len(set(counts)) != 1:
+                raise ValueError('P3-C modality batches must have equal lengths')
+            cameras = list(camids)
+            modality = torch.arange(3, device=device).repeat_interleave(counts[0])
+        else:
+            if mode not in (1, 2, 3):
+                raise ValueError('P3-C inference mode must identify RGB=1, IR=2, Thermal=3')
+            device = images.device
+            counts, cameras = [len(images)], [camids]
+            modality = torch.full((len(images),), mode - 1, device=device, dtype=torch.long)
+        aligned = []
+        for camera, count in zip(cameras, counts):
+            if camera is None:
+                raise ValueError('P3-C requires per-image camera IDs during training and retrieval')
+            camera = torch.as_tensor(camera, device=device)
+            if (camera.ndim != 1 or len(camera) != count or camera.dtype not in
+                    (torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8)):
+                raise ValueError('P3-C camera IDs must be an aligned integer vector')
+            if torch.any((camera < 0) | (camera >= self.history_camera_count)):
+                raise ValueError('P3-C camera IDs must be internal WHU-MARS IDs 0 through 6')
+            aligned.append(camera.long())
+        camera = torch.cat(aligned)
+        # Fixed platform indices: Aerial=0, Ground=1. Unknown cameras were rejected above.
+        platform = (~((camera == 5) | (camera == 6))).long()
+        return modality, platform
+
     def forward(self, x=None, label=None, camids=None, mode=0, history_diagnostics=False):
         if mode==0:
             imgs = list(x)
+            conditions = self._history_conditions(imgs, camids, mode) if self.history_conditioned else None
             per_modality = imgs[0].shape[0]
             x = torch.cat(imgs, dim=0)
             # Modality-major: row i belongs to modality i // per_modality, the
@@ -478,7 +526,8 @@ class build_transformer(nn.Module):
             history_aux = None
             if self.use_history:
                 global_feat, history_aux = self.base(
-                    x, history_collect=True, history_diagnostics=history_diagnostics)
+                    x, history_collect=True, history_diagnostics=history_diagnostics,
+                    **({'history_conditions': conditions} if self.history_conditioned else {}))
             else:
                 global_feat = self.base(x, modal_label=modal, vpr_gate=vpr_gate)
             if replay_aux:
@@ -570,7 +619,9 @@ class build_transformer(nn.Module):
                 vpr_gate = (torch.isin(cams, self.vpr_aerial_cams.to(x.device))
                             .to(x.dtype) if self.vpr_aerial_only
                             else x.new_ones(cams.shape[0]))
-            global_feat = self.base(x, modal_label=modal, vpr_gate=vpr_gate)
+            conditions = self._history_conditions(x, camids, mode) if self.history_conditioned else None
+            global_feat = self.base(x, modal_label=modal, vpr_gate=vpr_gate,
+                                    **({'history_conditions': conditions} if self.history_conditioned else {}))
             feat = self.bottleneck(global_feat)
             if self.neck_feat == 'after':
                 return feat

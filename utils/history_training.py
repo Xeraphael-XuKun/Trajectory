@@ -5,6 +5,9 @@ import torch
 def history_gradient_groups(model):
     model = model.module if hasattr(model, 'module') else model
     prediction = list(model.base.history_adapter.predictors.parameters())
+    if getattr(model.base.history_adapter, 'uses_conditions', False):
+        prediction += [model.base.history_adapter.modal_condition,
+                       model.base.history_adapter.platform_condition]
     prediction_ids = {id(p) for p in prediction}
     task = [p for p in model.parameters() if p.requires_grad and id(p) not in prediction_ids]
     return {'task': task, 'prediction': prediction}
