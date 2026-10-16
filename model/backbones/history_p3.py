@@ -25,6 +25,10 @@ class HistoryP3Adapter(nn.Module):
             nn.init.zeros_(predictor[-1].weight)
             nn.init.zeros_(predictor[-1].bias)
 
+    def _predict_history(self, index, last, old_delta):
+        delta = self.predictors[index](torch.cat((last, old_delta), -1))
+        return delta, last + delta
+
     def correction(self, h, layer, history, previous_r, collect=False, diagnostics=False,
                    previous_velocity=None):
         with torch.autocast(device_type=h.device.type, enabled=False):
@@ -40,8 +44,8 @@ class HistoryP3Adapter(nn.Module):
                 if layer >= 2:
                     last = history[-1]
                     old_delta = last - history[-2] if len(history) > 1 else torch.zeros_like(last)
-                    prediction = self.predictors[layer - 2](torch.cat((last, old_delta), -1))
-                    innovation = z_patch - (last + prediction).detach()
+                    prediction, predicted_state = self._predict_history(layer - 2, last, old_delta)
+                    innovation = z_patch - predicted_state.detach()
                     innovation_direction = F.layer_norm(innovation, (h.shape[-1],), eps=1e-5)
                     innovation_r = self.alpha * self.innovation_gain[layer - 2] * innovation_direction
                     r = (velocity_r + torch.cat((torch.zeros_like(velocity_r[:, :1]), innovation_r), 1)).to(h.dtype)
