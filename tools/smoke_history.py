@@ -39,12 +39,12 @@ def main(args):
     c.SOLVER.MAX_EPOCHS = 1; c.SOLVER.EVAL_PERIOD = 999
     c.SOLVER.CHECKPOINT_PERIOD = 1; c.SOLVER.LOG_PERIOD = 1
     c.DATALOADER.NUM_WORKERS = 0
-    c.DATALOADER.NUM_INSTANCE = 2; c.SOLVER.IMS_PER_BATCH = 4
+    c.DATALOADER.NUM_INSTANCE = args.instances; c.SOLVER.IMS_PER_BATCH = args.logical_batch
     c.OUTPUT_DIR = str(output)
     c.freeze()
     set_seed(c.SOLVER.SEED, c.SOLVER.CUDNN_BENCHMARK)
     logger = setup_logger('transreid', str(output), if_train=True)
-    logger.info('SMOKE ONLY: one real twelve-image batch repeated for %d optimizer attempts', args.steps)
+    logger.info('SMOKE ONLY: logical batch=%d, K=%d, one real batch repeated for %d optimizer attempts', args.logical_batch, args.instances, args.steps)
     logger.info(runtime_summary())
     (output / 'resolved_config.yml').write_text(c.dump(), encoding='utf-8')
     loader, _, _, _, classes, cameras, views = make_dataloader(c)
@@ -78,6 +78,8 @@ def main(args):
 
 if __name__ == '__main__':
     p=argparse.ArgumentParser()
+    p.add_argument('--logical-batch', type=int, default=4)
+    p.add_argument('--instances', type=int, default=2)
     p.add_argument('--steps', type=int, default=16)
     p.add_argument('--config', default='configs/history_HI1.yml')
     p.add_argument('--pretrained', required=True)
