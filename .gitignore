@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.pth
+*.pt
+*.ckpt
+*.npy
+logs/
+/work/
+/AGENTS.md
+/DEPLOYMENT.json

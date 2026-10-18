@@ -1,0 +1,136 @@
+# 原H-P3＋原A800 M2-5教师；从原CLIP独立训练，不加载H-P3终态权重。
+MODEL:
+  PRETRAIN_CHOICE: imagenet
+  PRETRAIN_PATH: /mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt
+  TRANSFORMER_TYPE: vit_base_clip
+  DROP_PATH: 0.1
+  DROP_OUT: 0.0
+  ATT_DROP_RATE: 0.0
+  METRIC_LOSS_TYPE: triplet
+  IF_LABELSMOOTH: 'off'
+  IF_WITH_CENTER: 'no'
+  NAME: transformer
+  NO_MARGIN: true
+  DEVICE_ID: ('0')
+  STRIDE_SIZE: [16, 16]
+  PE_LAYERWISE: none
+  TOKEN_TRAJECTORY: false
+  TOKEN_TRAJECTORY_ACCEL_MIX: 1.0
+  PE_FREEZE_BASE: false
+  TEXT_ALIGN: false
+  VPR: false
+  MOD_DELTA: false
+  CE_SPLIT_VIEW: false
+  CE_SPLIT_MODALITY: false
+  SIE_CAMERA: false
+  SIE_VIEW: false
+  DIST_TRAIN: false
+  PE_TYPE: learnable
+  TEXT_CLIP_PATH: /mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt
+
+INPUT:
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+
+DATASETS:
+  NAMES: ('WHU-MARS')
+  ROOT_DIR: /mnt/cache/wanghanzhi/Datasets
+  MODALITIES: [RGB, IR, Thermal]
+  AERIAL_CAMS: [5, 6]
+  PROTOCOL: ALL
+  SUBDIR: ''
+
+DATALOADER:
+  SAMPLER: PKM
+  NUM_INSTANCE: 4
+  NUM_WORKERS: 8
+  SYNC_FRAMES: false
+  TIE_AUGMENTATION: false
+
+SOLVER:
+  OPTIMIZER_NAME: Adam
+  SEED: 1234
+  CUDNN_BENCHMARK: true
+  MAX_EPOCHS: 60
+  BASE_LR: 0.00035
+  PRETRAINED_LR: 0.000005
+  BIAS_LR_FACTOR: 1
+  IMS_PER_BATCH: 64
+  WARMUP_ITERS: 100
+  WARMUP_LR_FACTOR: 0.01
+  LR_MIN_FACTOR: 0.002
+  WARMUP_METHOD: linear
+  LARGE_FC_LR: false
+  WEIGHT_DECAY: 1e-4
+  WEIGHT_DECAY_BIAS: 1e-4
+  CHECKPOINT_PERIOD: 60
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 10
+  LOSS_TYPE: base
+  PE_DELTA_LR_MULT: 1.0
+  TEXT_LOSS_WEIGHT: 0.0
+  TWIN_LOSS_WEIGHT: 0.0
+  TNCE_WEIGHT: 0.0
+  MOD_DELTA_ONLY: false
+
+TEST:
+  EVAL: true
+  IMS_PER_BATCH: 1024
+  RE_RANKING: false
+  WEIGHT: transformer_60_student.pth
+  NECK_FEAT: after
+  FEAT_NORM: 'yes'
+  METRIC: sysu
+  TOP_K_EVAL: 0
+
+HISTORY:
+  ENABLED: true
+  METHOD: p3
+  STOP_AFTER_EPOCH: 0
+  NETWORK_LR: 0.0001
+  GRAD_DIAG_PERIOD: 50
+  PREDICTOR_HIDDEN_DIM: 32
+  ALPHA: 0.25
+  TOKEN_SCOPE: all
+  GAIN_MODE: linear
+  PREDICTION_LAYERS: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+  LOSS_WEIGHT: 1.0
+  INIT_SEED: 1235
+  WRITE_WEIGHT_DECAY: -1.0
+
+M2:
+  ENABLED: true
+  VARIANT: conditional_teacher_distill
+  TRAIN_STAGE: student
+  CLIP_PATH: /mnt/cache/wanghanzhi/Datasets/ViT-B-16.pt
+  FEATURE_CACHE: /mnt/cache/wanghanzhi/XK/m2-e/artifacts/train_clip_cache.pt
+  PROMPT_WEIGHT: /mnt/cache/wanghanzhi/XK/m2-e/artifacts/shared_id_prompts_final.pt
+  TEXT_BANK: /mnt/cache/wanghanzhi/XK/m2-e/artifacts/shared_id_text_bank.pt
+  TEACHER_WEIGHT: /mnt/cache/wanghanzhi/XK/m2-e/logs/teacher/conditional_teacher_epoch60.pth
+  PROMPT_STEPS: 10000
+  PROMPT_SAVE_PERIOD: 1000
+  KD_TEMPERATURE: 2.0
+  KD_WEIGHT: 0.5
+  TEXT_TEMPERATURE: 0.07
+  TEACHER_SAME_AUGMENTED_INPUT: true
+  RESUME: ''
+
+TEACHER_STAGE:
+  MAX_EPOCHS: 60
+  USE_C0: false
+  FREEZE_PRETRAINED_BACKBONE: true
+  LORA_TARGETS: [q, v]
+  LORA_RANK: 8
+  LORA_ALPHA: 8.0
+  MODALITY_BANKS: 3
+  PLATFORM_BANKS: 2
+  TEXT_ID_WEIGHT: 0.5
+  TEMPERATURE: 0.07
+  OUTPUT_DIR: /mnt/cache/wanghanzhi/XK/m2-e/logs/teacher
+
+OUTPUT_DIR: /mnt/cache/wanghanzhi/XK/Trajectory_runs/hp3_m25_a800_1018/HP3_M25_seed1234
